@@ -1,0 +1,20 @@
+[project]
+name = "omblecavalier"
+version = "0.1.0"
+description = "A chess engine implementation in Python."
+authors = [
+    {name = "Hughes Perreault",email = "perreault.hughes@gmail.com"}
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "bulletchess (>=0.3.3,<0.4.0)",
+    "pyinstaller (>=6.14.2,<7.0.0)",
+    "chess (>=1.11.2,<2.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

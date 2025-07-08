@@ -1,0 +1,1 @@
+pyinstaller --onefile --distpath engines omblecavalier/engines/uci_random_moves.py --hidden-import=chess

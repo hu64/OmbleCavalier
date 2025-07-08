@@ -1,0 +1,1 @@
+pyinstaller --onefile --distpath engines omblecavalier/engines/omble_cavalier.py --hidden-import=chess
