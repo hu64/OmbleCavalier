@@ -138,8 +138,8 @@ def evaluate_board(board, ply_from_root=0):
     # DSI = 50 * (nbr_doubled_pawns + nbr_isolated_pawns + nbr_blocked_pawns)
     # score += DSI
 
-    mobility_score = 10 * len(list(board.legal_moves))
-    score += mobility_score
+    # mobility_score = 10 * len(list(board.legal_moves))
+    # score += mobility_score
 
     return score
 
