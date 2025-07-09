@@ -122,12 +122,12 @@ def evaluate_board(board, ply_from_root=0):
         for square in board.pieces(piece_type, chess.WHITE):
             rank = 7 - chess.square_rank(square)
             file = chess.square_file(square)
-            material_score += MATERIAL_VALUES[piece_type] # + pst_2d[piece_type][rank][file]
+            material_score += MATERIAL_VALUES[piece_type] + pst_2d[piece_type][rank][file]
 
         for square in board.pieces(piece_type, chess.BLACK):
             rank = chess.square_rank(square)
             file = chess.square_file(square)
-            material_score -= MATERIAL_VALUES[piece_type] # + pst_2d[piece_type][rank][file]
+            material_score -= MATERIAL_VALUES[piece_type] + pst_2d[piece_type][rank][file]
     
     # if board.is_repetition(3) or board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
     #     return -200 if material_score >= 200 else 0
