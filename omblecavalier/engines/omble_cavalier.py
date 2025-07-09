@@ -143,7 +143,7 @@ def evaluate_board(board, ply_from_root=0):
     # score += DSI
 
     mobility_score = 10 * len(list(board.legal_moves()))
-    score += mobility_score if board.turn else -mobility_score
+    score += mobility_score if board.turn == WHITE else -mobility_score
 
     return score
 
@@ -278,7 +278,7 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
     return best_score
 
 def find_best_move(board, depth, total_time_remaining):
-    print(f"info string Finding best move for {'White' if board.turn else 'Black'} at depth {depth} with total time remaining {total_time_remaining:.2f} seconds")
+    print(f"info string Finding best move for {'White' if board.turn == WHITE else 'Black'} at depth {depth} with total time remaining {total_time_remaining:.2f} seconds")
 
     best_move = None
     best_score = -float('inf')
@@ -388,10 +388,10 @@ def main():
                 if "depth" in tokens:
                     depth_index = tokens.index("depth") + 1
                     depth = int(tokens[depth_index])
-                if "wtime" in tokens and board.turn:
+                if "wtime" in tokens and board.turn == WHITE:
                     time_index = tokens.index("wtime") + 1
                     total_time_remaining = int(tokens[time_index]) / 1000
-                if "btime" in tokens and not board.turn:
+                if "btime" in tokens and not board.turn == WHITE:
                     time_index = tokens.index("btime") + 1
                     total_time_remaining = int(tokens[time_index]) / 1000
 
