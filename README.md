@@ -74,7 +74,7 @@ poetry shell
 
 Then build:
 ```bash
-pyinstaller --onefile --distpath engines omblecavalier/engines/omble_cavalier.py --hidden-import=chess
+pyinstaller --onefile --distpath engines omblecavalier/engines/omble_cavalier.py --collect-all bulletchess
 ```
 
 The resulting binary is located in `engines/omblecavalier`.

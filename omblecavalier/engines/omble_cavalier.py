@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 import sys
 import bulletchess as chess
-from bulletchess import BoardStatus, PIECE_TYPES, CHECK, CHECKMATE, STALEMATE, INSUFFICIENT_MATERIAL, WHITE, BLACK, DRAW
-import chess.engine
+from bulletchess import Board, Move, BoardStatus, PIECE_TYPES, CHECK, CHECKMATE, STALEMATE, INSUFFICIENT_MATERIAL, WHITE, BLACK, DRAW
 import time
 import logging
 logging.basicConfig(level=logging.DEBUG)
@@ -322,16 +321,16 @@ def find_best_move(board, depth, total_time_remaining):
     return best_move
 
 def find_best_move_iterative(board, max_depth, total_time_remaining):
-    legal_moves = list(board.legal_moves())
-    if not legal_moves:
+    legal_moves_list = list(board.legal_moves())
+    if not legal_moves_list:
         print("info string No legal moves available")
         return None
 
-    best_move = legal_moves[0]
+    best_move = legal_moves_list[0]
     for depth in range(1, max_depth + 1):
         print(f"info string Searching at depth {depth}")
         move = find_best_move(board, depth, total_time_remaining)
-        if move in legal_moves:
+        if move in legal_moves_list:
             best_move = move
         else:
             print("info string No legal moves found")
@@ -347,56 +346,71 @@ def find_best_move_iterative(board, max_depth, total_time_remaining):
 
     return best_move
 
-# UCI-compatible engine
 def main():
-    board = chess.Board()
+    board = Board()
     depth = 6
 
     while True:
-        line = sys.stdin.readline().strip()
-        if line == "uci":
-            print("id name OmbleCavalier")
-            print("id author Hughes Perreault")
-            print("uciok")
-            sys.stdout.flush()
-        elif line == "isready":
-            print("readyok")
-            sys.stdout.flush()
-        elif line == "ucinewgame":
-            board.reset()
-        elif line.startswith("position"):
-            tokens = line.split()
-            if "startpos" in tokens:
-                board.reset()
-                if "moves" in tokens:
-                    moves_index = tokens.index("moves") + 1
-                    for move_str in tokens[moves_index:]:
-                        board.push_uci(move_str)
-        elif line.startswith("go"):
-            tokens = line.split()
-            total_time_remaining = 50  # Default total time in seconds
+        try:
+            line = sys.stdin.readline()
+            if not line:
+                break
+            line = line.strip()
 
-            if "depth" in tokens:
-                depth_index = tokens.index("depth") + 1
-                depth = int(tokens[depth_index])
-            if "wtime" in tokens and board.turn:  # White's time remaining
-                time_index = tokens.index("wtime") + 1
-                total_time_remaining = int(tokens[time_index]) / 1000  # Convert milliseconds to seconds
-            if "btime" in tokens and not board.turn:  # Black's time remaining
-                time_index = tokens.index("btime") + 1
-                total_time_remaining = int(tokens[time_index]) / 1000  # Convert milliseconds to seconds
+            if line == "uci":
+                print("id name OmbleCavalier")
+                print("id author Hughes Perreault")
+                print("uciok")
+                sys.stdout.flush()
 
-            best_move = find_best_move_iterative(board, depth, total_time_remaining)
-            if best_move is not None:
-                print(f"bestmove {best_move.uci()}")
+            elif line == "isready":
+                print("readyok")
+                sys.stdout.flush()
+
+            elif line == "ucinewgame":
+                board = Board.from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+
+            elif line.startswith("position"):
+                tokens = line.split()
+                if "startpos" in tokens:
+                    board = Board.from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+                    if "moves" in tokens:
+                        moves_index = tokens.index("moves") + 1
+                        for move_str in tokens[moves_index:]:
+                            move = Move.from_uci(move_str)
+                            print(f"info string Applying move {move_str}")
+                            board.apply(move)
+
+            elif line.startswith("go"):
+                tokens = line.split()
+                total_time_remaining = 50  # default in seconds
+
+                if "depth" in tokens:
+                    depth_index = tokens.index("depth") + 1
+                    depth = int(tokens[depth_index])
+                if "wtime" in tokens and board.turn:
+                    time_index = tokens.index("wtime") + 1
+                    total_time_remaining = int(tokens[time_index]) / 1000
+                if "btime" in tokens and not board.turn:
+                    time_index = tokens.index("btime") + 1
+                    total_time_remaining = int(tokens[time_index]) / 1000
+
+                best_move = find_best_move_iterative(board, depth, total_time_remaining)
+                if best_move is not None:
+                    print(f"bestmove {best_move.uci()}")
+                else:
+                    print("bestmove 0000")
+                sys.stdout.flush()
+
+            elif line == "quit":
+                break
+
             else:
-                print("bestmove 0000")  # Indicate no legal moves
-            sys.stdout.flush()
-        elif line == "quit":
-            break
+                print(f"info string Unknown command: {line}")
+                sys.stdout.flush()
 
-        else:
-            print(f"info string Unknown command: {line}")
+        except Exception as e:
+            print(f"info string Exception: {e}")
             sys.stdout.flush()
 
 if __name__ == "__main__":
