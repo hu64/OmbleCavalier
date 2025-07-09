@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
-import sys
-import bulletchess as chess
-from bulletchess import Board, Move, BoardStatus, PIECE_TYPES, CHECK, CHECKMATE, STALEMATE, INSUFFICIENT_MATERIAL, WHITE, BLACK, DRAW
-import time
 import logging
+import sys
+import time
+
+import bulletchess as chess
+from bulletchess import (
+    BLACK,
+    CHECK,
+    CHECKMATE,
+    DRAW,
+    INSUFFICIENT_MATERIAL,
+    PIECE_TYPES,
+    STALEMATE,
+    WHITE,
+    Board,
+    Move,
+)
+
 logging.basicConfig(level=logging.DEBUG)
 
 # Material values
@@ -13,7 +26,7 @@ MATERIAL_VALUES = {
     PIECE_TYPES[2]: 330,
     PIECE_TYPES[3]: 500,
     PIECE_TYPES[4]: 900,
-    PIECE_TYPES[5]: 60000  
+    PIECE_TYPES[5]: 60000,
 }
 # Transform the piece-square tables into 2D arrays (8x8)
 pst_2d = {
@@ -81,6 +94,7 @@ pst_2d = {
 
 TRANSPOSITION_TABLE = {}
 
+
 def tt_lookup(board, depth, alpha, beta):
     key = board.__hash__()
     if key in TRANSPOSITION_TABLE:
@@ -96,6 +110,7 @@ def tt_lookup(board, depth, alpha, beta):
                 return value
     return None
 
+
 def tt_store(board, depth, value, alpha, beta):
     key = board.__hash__()
     if value <= alpha:
@@ -106,8 +121,8 @@ def tt_store(board, depth, value, alpha, beta):
         flag = "EXACT"
     TRANSPOSITION_TABLE[key] = (depth, value, flag)
 
+
 def evaluate_board(board, ply_from_root=0):
-    
     if board in CHECKMATE:
         return -100000 + ply_from_root
 
@@ -116,9 +131,11 @@ def evaluate_board(board, ply_from_root=0):
 
     score = 0
     material_score = 0
-    
+
     for piece_type in MATERIAL_VALUES:
-        material_score += (board[WHITE, piece_type].__len__() * MATERIAL_VALUES[piece_type]) - (board[BLACK, piece_type].__len__() * MATERIAL_VALUES[piece_type])
+        material_score += (
+            board[WHITE, piece_type].__len__() * MATERIAL_VALUES[piece_type]
+        ) - (board[BLACK, piece_type].__len__() * MATERIAL_VALUES[piece_type])
 
         # for square in board.pieces(piece_type, chess.WHITE):
         #     rank = 7 - chess.square_rank(square)
@@ -130,7 +147,7 @@ def evaluate_board(board, ply_from_root=0):
         #     rank = chess.square_rank(square)
         #     file = chess.square_file(square)
         #     material_score -= MATERIAL_VALUES[piece_type] + pst_2d[piece_type][rank][file]
-    
+
     # if board.is_repetition(3) or board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
     #     return -200 if material_score >= 200 else 0
 
@@ -147,6 +164,7 @@ def evaluate_board(board, ply_from_root=0):
 
     return score
 
+
 def count_doubled_pawns(board, color):
     """Count doubled pawns for a given color."""
     pawns = board.pieces(chess.PAWN, color)
@@ -159,6 +177,7 @@ def count_doubled_pawns(board, color):
         else:
             files.add(file_index)
     return doubled_count
+
 
 def count_isolated_pawns(board, color):
     """Count isolated pawns for a given color."""
@@ -184,6 +203,7 @@ def count_isolated_pawns(board, color):
 
     return isolated_count
 
+
 def count_blocked_pawns(board, color):
     """Count blocked pawns for a given color."""
     pawns = board.pieces(chess.PAWN, color)
@@ -196,32 +216,36 @@ def count_blocked_pawns(board, color):
             blocked_count += 1
     return blocked_count
 
+
 def get_piece_value(board, square):
     pt = board[square].piece_type
     return MATERIAL_VALUES[pt] if pt else 0
 
+
 # Order moves based on a heuristic
 def order_moves(board):
     """Order moves to improve Alpha-Beta Pruning efficiency."""
+
     def move_score(move):
         board.apply(move)
         is_check = board in CHECK
         board.undo()
         if is_check:
-            return 70  
+            return 70
         if move.is_capture(board):
-           
             captured_value = get_piece_value(board, move.destination)
             capturing_value = get_piece_value(board, move.origin)
 
-            return 100 + ((captured_value - capturing_value)/100)
+            return 100 + ((captured_value - capturing_value) / 100)
         if move.is_castling(board):
-            return 90 
+            return 90
         if move.promotion:
-            return 60  
-        return 0  
+            return 60
+        return 0
+
     return sorted(board.legal_moves(), key=move_score, reverse=True)
-    
+
+
 def quiesce(board, alpha, beta, ply_from_root=0):
     stand_pat = evaluate_board(board, ply_from_root)
     if stand_pat >= beta:
@@ -241,6 +265,7 @@ def quiesce(board, alpha, beta, ply_from_root=0):
                 alpha = score
     return alpha
 
+
 def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
     if time.time() - start_time > time_limit:
         return None
@@ -256,16 +281,18 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
         return quiesce(board, alpha, beta, ply_from_root)
 
     original_alpha = alpha
-    best_score = float('-inf')
+    best_score = float("-inf")
     for move in order_moves(board):
         board.apply(move)
-        score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1)
+        score = negamax(
+            board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1
+        )
         board.undo()
         if score is None:
             return None
-        else :
+        else:
             score = -score
-       
+
         if score > best_score:
             best_score = score
 
@@ -277,20 +304,25 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
     tt_store(board, depth, best_score, original_alpha, beta)
     return best_score
 
+
 def find_best_move(board, depth, total_time_remaining):
-    print(f"info string Finding best move for {'White' if board.turn == WHITE else 'Black'} at depth {depth} with total time remaining {total_time_remaining:.2f} seconds")
+    print(
+        f"info string Finding best move for {'White' if board.turn == WHITE else 'Black'} at depth {depth} with total time remaining {total_time_remaining:.2f} seconds"
+    )
 
     best_move = None
-    best_score = -float('inf')
-    alpha = -float('inf')
-    beta = float('inf')
+    best_score = -float("inf")
+    alpha = -float("inf")
+    beta = float("inf")
 
-    time_limit = min(max(0.05 * total_time_remaining, 0.5), total_time_remaining / 10) 
+    time_limit = min(max(0.05 * total_time_remaining, 0.5), total_time_remaining / 10)
     start_time = time.time()
 
     for move in order_moves(board):
         board.apply(move)
-        score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root=1)
+        score = negamax(
+            board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root=1
+        )
         board.undo()
         if score is None:
             return None
@@ -305,13 +337,13 @@ def find_best_move(board, depth, total_time_remaining):
 
         if abs(score) > 99900:
             # Mate score: convert distance-to-mate from score
-            mate_in = (100000 - abs(score))
+            mate_in = 100000 - abs(score)
             sign = 1 if score > 0 else -1
             print(f"info score mate {sign * (mate_in + 1)} pv {move.uci()}")
         else:
             print(f"info score cp {score} pv {move.uci()}")
 
-        #Early cutoff on mate found
+        # Early cutoff on mate found
         if best_score > 99900:
             break
 
@@ -319,6 +351,7 @@ def find_best_move(board, depth, total_time_remaining):
             break
 
     return best_move
+
 
 def find_best_move_iterative(board, max_depth, total_time_remaining):
     legal_moves_list = list(board.legal_moves())
@@ -346,6 +379,7 @@ def find_best_move_iterative(board, max_depth, total_time_remaining):
 
     return best_move
 
+
 def main():
     board = Board()
     depth = 6
@@ -368,12 +402,16 @@ def main():
                 sys.stdout.flush()
 
             elif line == "ucinewgame":
-                board = Board.from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+                board = Board.from_fen(
+                    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+                )
 
             elif line.startswith("position"):
                 tokens = line.split()
                 if "startpos" in tokens:
-                    board = Board.from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+                    board = Board.from_fen(
+                        "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
+                    )
                     if "moves" in tokens:
                         moves_index = tokens.index("moves") + 1
                         for move_str in tokens[moves_index:]:
@@ -411,6 +449,7 @@ def main():
         except Exception as e:
             print(f"info string Exception: {e}")
             sys.stdout.flush()
+
 
 if __name__ == "__main__":
     main()
