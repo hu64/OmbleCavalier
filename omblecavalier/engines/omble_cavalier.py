@@ -108,8 +108,12 @@ def tt_store(board, depth, value, alpha, beta):
     TRANSPOSITION_TABLE[key] = (depth, value, flag)
 
 def evaluate_board(board, ply_from_root=0):
+    
     if board.is_checkmate():
-        return -100000 + ply_from_root  # Losing is bad, sooner is worse
+        return -100000 + ply_from_root
+
+    if board.is_stalemate() or board.is_insufficient_material():
+        return 0
 
     score = 0
     material_score = 0
@@ -125,12 +129,10 @@ def evaluate_board(board, ply_from_root=0):
             file = chess.square_file(square)
             material_score -= MATERIAL_VALUES[piece_type] # + pst_2d[piece_type][rank][file]
     
-    material_score = material_score if board.turn else -material_score
-
     # if board.is_repetition(3) or board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
     #     return -200 if material_score >= 200 else 0
 
-    # score += material_score
+    score += material_score if board.turn else -material_score
 
     # nbr_doubled_pawns = count_doubled_pawns(board, board.turn) - count_doubled_pawns(board, not board.turn)
     # nbr_isolated_pawns = count_isolated_pawns(board, board.turn) - count_isolated_pawns(board, not board.turn)
@@ -138,8 +140,8 @@ def evaluate_board(board, ply_from_root=0):
     # DSI = 50 * (nbr_doubled_pawns + nbr_isolated_pawns + nbr_blocked_pawns)
     # score += DSI
 
-    # mobility_score = 10 * len(list(board.legal_moves))
-    # score += mobility_score
+    mobility_score = 10 * len(list(board.legal_moves))
+    score += mobility_score if board.turn else -mobility_score
 
     return score
 
@@ -196,7 +198,11 @@ def count_blocked_pawns(board, color):
 def order_moves(board):
     """Order moves to improve Alpha-Beta Pruning efficiency."""
     def move_score(move):
-        # Prioritize captures of higher-value pieces
+        board.push(move)
+        is_check = board.is_check()
+        board.pop()
+        if is_check:
+            return 70  
         if board.is_capture(move):
             captured_piece = board.piece_at(move.to_square)
             capturing_piece = board.piece_at(move.from_square)
@@ -209,38 +215,14 @@ def order_moves(board):
             else:
                 capturing_value = MATERIAL_VALUES.get(capturing_piece.piece_type, 0)
             return 100 + ((captured_value - capturing_value)/100)
-
-        # Prioritize castling
         if board.is_castling(move):
-            return 90  # High score for castling moves
-
-        # Prioritize checks
-        board.push(move)
-        is_check = board.is_check()
-        board.pop()
-        if is_check:
-            return 70  # High score for moves that give check
-
-        # Avoid threefold repetition
-        board.push(move)
-        is_repetition = board.is_repetition()
-        board.pop()
-        if is_repetition:
-            return -100  # Penalize moves that lead to threefold repetition
-
-        # Prioritize promotions
+            return 90 
         if move.promotion:
-            return 60  # High score for pawn promotions
-
-        return 0  # Default score for other moves
-
-    # Sort moves by their heuristic score in descending order
+            return 60  
+        return 0  
     return sorted(board.legal_moves, key=move_score, reverse=True)
     
 def quiesce(board, alpha, beta, ply_from_root=0):
-    if board.is_checkmate():
-        return -100000 + ply_from_root
-
     stand_pat = evaluate_board(board, ply_from_root)
     if stand_pat >= beta:
         return beta
@@ -282,8 +264,10 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
 
         if score is None:
             return None
+
         if score > best_score:
             best_score = score
+
         if score > alpha:
             alpha = score
         if alpha >= beta:
@@ -310,13 +294,13 @@ def find_best_move(board, depth, total_time_remaining):
 
         if score is None:
             return None
+
         if score > best_score:
             best_score = score
             best_move = move
 
         alpha = max(alpha, score)
 
-        # 🧠 Send score to GUI (centipawns or mate)
         if abs(score) > 99900:
             # Mate score: convert distance-to-mate from score
             mate_in = (100000 - abs(score))
@@ -325,7 +309,7 @@ def find_best_move(board, depth, total_time_remaining):
         else:
             print(f"info score cp {score} pv {move.uci()}")
 
-        # Early cutoff on mate found
+        #Early cutoff on mate found
         if best_score > 99900:
             break
 
@@ -363,7 +347,7 @@ def find_best_move_iterative(board, max_depth, total_time_remaining):
 # UCI-compatible engine
 def main():
     board = chess.Board()
-    depth = 3
+    depth = 6
 
     while True:
         line = sys.stdin.readline().strip()
