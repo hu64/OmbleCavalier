@@ -231,7 +231,7 @@ def order_moves(board):
         is_check = board in CHECK
         board.undo()
         if is_check:
-            return 70
+            return 200
         if move.is_capture(board):
             captured_value = get_piece_value(board, move.destination)
             capturing_value = get_piece_value(board, move.origin)
@@ -305,18 +305,12 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
     return best_score
 
 
-def find_best_move(board, depth, total_time_remaining):
-    print(
-        f"info string Finding best move for {'White' if board.turn == WHITE else 'Black'} at depth {depth} with total time remaining {total_time_remaining:.2f} seconds"
-    )
+def find_best_move(board, depth, start_time, time_limit):
 
     best_move = None
     best_score = -float("inf")
     alpha = -float("inf")
     beta = float("inf")
-
-    time_limit = min(max(0.05 * total_time_remaining, 0.5), total_time_remaining / 10)
-    start_time = time.time()
 
     for move in order_moves(board):
         board.apply(move)
@@ -354,6 +348,10 @@ def find_best_move(board, depth, total_time_remaining):
 
 
 def find_best_move_iterative(board, max_depth, total_time_remaining):
+    
+    time_limit = total_time_remaining / max(10, (40 - (len(board.history)/2)))
+    start_time = time.time()
+
     legal_moves_list = list(board.legal_moves())
     if not legal_moves_list:
         print("info string No legal moves available")
@@ -362,7 +360,7 @@ def find_best_move_iterative(board, max_depth, total_time_remaining):
     best_move = legal_moves_list[0]
     for depth in range(1, max_depth + 1):
         print(f"info string Searching at depth {depth}")
-        move = find_best_move(board, depth, total_time_remaining)
+        move = find_best_move(board, depth, start_time, time_limit)
         if move in legal_moves_list:
             best_move = move
         else:
