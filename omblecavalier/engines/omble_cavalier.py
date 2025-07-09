@@ -134,7 +134,7 @@ def evaluate_board(board, ply_from_root=0):
     # if board.is_repetition(3) or board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
     #     return -200 if material_score >= 200 else 0
 
-    score += material_score if board.turn else -material_score
+    score += material_score if board.turn == WHITE else -material_score
 
     # nbr_doubled_pawns = count_doubled_pawns(board, board.turn) - count_doubled_pawns(board, not board.turn)
     # nbr_isolated_pawns = count_isolated_pawns(board, board.turn) - count_isolated_pawns(board, not board.turn)
