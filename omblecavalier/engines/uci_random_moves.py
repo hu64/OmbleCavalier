@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 import sys
 import random
-import chess
+import bulletchess as chess
+from bulletchess import Board, Move
 import logging
 
 logging.basicConfig(filename="engine_debug.log", level=logging.DEBUG)
@@ -9,7 +10,7 @@ logging.basicConfig(filename="engine_debug.log", level=logging.DEBUG)
 logging.debug("Engine started")
 
 def main():
-    board = chess.Board()
+    board = Board()
     while True:
         line = sys.stdin.readline()
         if not line:
@@ -29,17 +30,18 @@ def main():
         elif line.startswith("position"):
             tokens = line.split()
             if "startpos" in tokens:
-                board.reset()
+                board = Board.from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
                 if "moves" in tokens:
                     moves_index = tokens.index("moves") + 1
                     for move_str in tokens[moves_index:]:
-                        board.push_uci(move_str)
+                        move = Move.from_uci(move_str)
+                        board.apply(move)
 
         elif line == "ucinewgame":
-            board.reset()
+            board = Board.from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
 
         elif line.startswith("go"):
-            legal_moves = list(board.legal_moves)
+            legal_moves = list(board.legal_moves())
             if legal_moves:
                 move = random.choice(legal_moves)
                 print(f"bestmove {move.uci()}")

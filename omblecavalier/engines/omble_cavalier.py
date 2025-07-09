@@ -378,7 +378,6 @@ def main():
                         moves_index = tokens.index("moves") + 1
                         for move_str in tokens[moves_index:]:
                             move = Move.from_uci(move_str)
-                            print(f"info string Applying move {move_str}")
                             board.apply(move)
 
             elif line.startswith("go"):
