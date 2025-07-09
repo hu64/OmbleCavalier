@@ -1,5 +1,5 @@
 import pytest
-from omblecavalier.engines.omble_cavalier import evaluate_board, find_best_move  # adjust import path
+from omblecavalier.engines.omble_cavalier import evaluate_board, find_best_move_iterative  # adjust import path
 import chess
 
 @pytest.mark.parametrize("fen, description, expected_best_move", [
@@ -11,7 +11,7 @@ import chess
 def test_puzzles(fen, description, expected_best_move):
     board = chess.Board()
     board.set_fen(fen)
-    best_move = find_best_move(board, depth=6, total_time_remaining=100)
+    best_move = find_best_move_iterative(board, max_depth=6, total_time_remaining=100)
     
     # Check if the best move matches expected (you can refine the check to allow UCI or Move object)
     assert str(best_move) == expected_best_move, f"Expected {expected_best_move}, got {best_move}"

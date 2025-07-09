@@ -243,7 +243,7 @@ def quiesce(board, alpha, beta, ply_from_root=0):
 
 def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
     if time.time() - start_time > time_limit:
-        return evaluate_board(board, ply_from_root)
+        return None
 
     if board.is_checkmate():
         return -100000 + ply_from_root
@@ -259,12 +259,13 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
     best_score = float('-inf')
     for move in order_moves(board):
         board.push(move)
-        score = -negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1)
+        score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1)
         board.pop()
-
         if score is None:
             return None
-
+        else :
+            score = -score
+       
         if score > best_score:
             best_score = score
 
@@ -289,11 +290,12 @@ def find_best_move(board, depth, total_time_remaining):
 
     for move in order_moves(board):
         board.push(move)
-        score = -negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root=1)
+        score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root=1)
         board.pop()
-
         if score is None:
             return None
+        else:
+            score = -score
 
         if score > best_score:
             best_score = score
