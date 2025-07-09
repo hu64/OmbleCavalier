@@ -1,20 +1,19 @@
 #!/usr/bin/env python3
 import sys
-import chess
-import chess.engine
+import bulletchess as chess
+from bulletchess import Board, Move, BoardStatus, PIECE_TYPES, CHECK, CHECKMATE, STALEMATE, INSUFFICIENT_MATERIAL, WHITE, BLACK, DRAW
 import time
 import logging
 logging.basicConfig(level=logging.DEBUG)
-import chess.polyglot
 
 # Material values
 MATERIAL_VALUES = {
-    chess.PAWN: 100,
-    chess.KNIGHT: 320,
-    chess.BISHOP: 330,
-    chess.ROOK: 500,
-    chess.QUEEN: 900,
-    chess.KING: 60000  
+    PIECE_TYPES[0]: 100,
+    PIECE_TYPES[1]: 320,
+    PIECE_TYPES[2]: 330,
+    PIECE_TYPES[3]: 500,
+    PIECE_TYPES[4]: 900,
+    PIECE_TYPES[5]: 60000  
 }
 # Transform the piece-square tables into 2D arrays (8x8)
 pst_2d = {
@@ -83,7 +82,7 @@ pst_2d = {
 TRANSPOSITION_TABLE = {}
 
 def tt_lookup(board, depth, alpha, beta):
-    key = chess.polyglot.zobrist_hash(board)
+    key = board.__hash__()
     if key in TRANSPOSITION_TABLE:
         stored_depth, value, flag = TRANSPOSITION_TABLE[key]
         if stored_depth >= depth:
@@ -98,7 +97,7 @@ def tt_lookup(board, depth, alpha, beta):
     return None
 
 def tt_store(board, depth, value, alpha, beta):
-    key = chess.polyglot.zobrist_hash(board)
+    key = board.__hash__()
     if value <= alpha:
         flag = "UPPERBOUND"
     elif value >= beta:
@@ -109,30 +108,33 @@ def tt_store(board, depth, value, alpha, beta):
 
 def evaluate_board(board, ply_from_root=0):
     
-    if board.is_checkmate():
+    if board in CHECKMATE:
         return -100000 + ply_from_root
 
-    if board.is_stalemate() or board.is_insufficient_material():
+    if board in STALEMATE or board in INSUFFICIENT_MATERIAL:
         return 0
 
     score = 0
     material_score = 0
-
+    
     for piece_type in MATERIAL_VALUES:
-        for square in board.pieces(piece_type, chess.WHITE):
-            rank = 7 - chess.square_rank(square)
-            file = chess.square_file(square)
-            material_score += MATERIAL_VALUES[piece_type] + pst_2d[piece_type][rank][file]
+        material_score += (board[WHITE, piece_type].__len__() * MATERIAL_VALUES[piece_type]) - (board[BLACK, piece_type].__len__() * MATERIAL_VALUES[piece_type])
 
-        for square in board.pieces(piece_type, chess.BLACK):
-            rank = chess.square_rank(square)
-            file = chess.square_file(square)
-            material_score -= MATERIAL_VALUES[piece_type] + pst_2d[piece_type][rank][file]
+        # for square in board.pieces(piece_type, chess.WHITE):
+        #     rank = 7 - chess.square_rank(square)
+        #     file = chess.square_file(square)
+
+        #     material_score += MATERIAL_VALUES[piece_type] + pst_2d[piece_type][rank][file]
+
+        # for square in board.pieces(piece_type, chess.BLACK):
+        #     rank = chess.square_rank(square)
+        #     file = chess.square_file(square)
+        #     material_score -= MATERIAL_VALUES[piece_type] + pst_2d[piece_type][rank][file]
     
     # if board.is_repetition(3) or board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
     #     return -200 if material_score >= 200 else 0
 
-    score += material_score if board.turn else -material_score
+    score += material_score if board.turn == WHITE else -material_score
 
     # nbr_doubled_pawns = count_doubled_pawns(board, board.turn) - count_doubled_pawns(board, not board.turn)
     # nbr_isolated_pawns = count_isolated_pawns(board, board.turn) - count_isolated_pawns(board, not board.turn)
@@ -140,8 +142,8 @@ def evaluate_board(board, ply_from_root=0):
     # DSI = 50 * (nbr_doubled_pawns + nbr_isolated_pawns + nbr_blocked_pawns)
     # score += DSI
 
-    mobility_score = 10 * len(list(board.legal_moves))
-    score += mobility_score if board.turn else -mobility_score
+    mobility_score = 10 * len(list(board.legal_moves()))
+    score += mobility_score if board.turn == WHITE else -mobility_score
 
     return score
 
@@ -194,33 +196,31 @@ def count_blocked_pawns(board, color):
             blocked_count += 1
     return blocked_count
 
+def get_piece_value(board, square):
+    pt = board[square].piece_type
+    return MATERIAL_VALUES[pt] if pt else 0
+
 # Order moves based on a heuristic
 def order_moves(board):
     """Order moves to improve Alpha-Beta Pruning efficiency."""
     def move_score(move):
-        board.push(move)
-        is_check = board.is_check()
-        board.pop()
+        board.apply(move)
+        is_check = board in CHECK
+        board.undo()
         if is_check:
             return 70  
-        if board.is_capture(move):
-            captured_piece = board.piece_at(move.to_square)
-            capturing_piece = board.piece_at(move.from_square)
-            if captured_piece is None:
-                captured_value = 0
-            else:
-                captured_value = MATERIAL_VALUES.get(captured_piece.piece_type, 0)
-            if capturing_piece is None:
-                capturing_value = 0
-            else:
-                capturing_value = MATERIAL_VALUES.get(capturing_piece.piece_type, 0)
+        if move.is_capture(board):
+           
+            captured_value = get_piece_value(board, move.destination)
+            capturing_value = get_piece_value(board, move.origin)
+
             return 100 + ((captured_value - capturing_value)/100)
-        if board.is_castling(move):
+        if move.is_castling(board):
             return 90 
         if move.promotion:
             return 60  
         return 0  
-    return sorted(board.legal_moves, key=move_score, reverse=True)
+    return sorted(board.legal_moves(), key=move_score, reverse=True)
     
 def quiesce(board, alpha, beta, ply_from_root=0):
     stand_pat = evaluate_board(board, ply_from_root)
@@ -229,11 +229,11 @@ def quiesce(board, alpha, beta, ply_from_root=0):
     if stand_pat > alpha:
         alpha = stand_pat
 
-    for move in board.legal_moves:
-        if board.is_capture(move):
-            board.push(move)
+    for move in board.legal_moves():
+        if move.is_capture(board):
+            board.apply(move)
             score = -quiesce(board, -beta, -alpha, ply_from_root + 1)
-            board.pop()
+            board.undo()
 
             if score >= beta:
                 return beta
@@ -245,22 +245,22 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
     if time.time() - start_time > time_limit:
         return None
 
-    if board.is_checkmate():
+    if board in CHECKMATE:
         return -100000 + ply_from_root
 
     tt_value = tt_lookup(board, depth, alpha, beta)
     if tt_value is not None:
         return tt_value
 
-    if depth <= 0 or board.is_game_over():
+    if depth <= 0 or board in (CHECKMATE, DRAW):
         return quiesce(board, alpha, beta, ply_from_root)
 
     original_alpha = alpha
     best_score = float('-inf')
     for move in order_moves(board):
-        board.push(move)
+        board.apply(move)
         score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1)
-        board.pop()
+        board.undo()
         if score is None:
             return None
         else :
@@ -278,7 +278,7 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
     return best_score
 
 def find_best_move(board, depth, total_time_remaining):
-    print(f"info string Finding best move for {'White' if board.turn else 'Black'} at depth {depth} with total time remaining {total_time_remaining:.2f} seconds")
+    print(f"info string Finding best move for {'White' if board.turn == WHITE else 'Black'} at depth {depth} with total time remaining {total_time_remaining:.2f} seconds")
 
     best_move = None
     best_score = -float('inf')
@@ -289,9 +289,9 @@ def find_best_move(board, depth, total_time_remaining):
     start_time = time.time()
 
     for move in order_moves(board):
-        board.push(move)
+        board.apply(move)
         score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root=1)
-        board.pop()
+        board.undo()
         if score is None:
             return None
         else:
@@ -321,16 +321,16 @@ def find_best_move(board, depth, total_time_remaining):
     return best_move
 
 def find_best_move_iterative(board, max_depth, total_time_remaining):
-    legal_moves = list(board.legal_moves)
-    if not legal_moves:
+    legal_moves_list = list(board.legal_moves())
+    if not legal_moves_list:
         print("info string No legal moves available")
         return None
 
-    best_move = legal_moves[0]
+    best_move = legal_moves_list[0]
     for depth in range(1, max_depth + 1):
         print(f"info string Searching at depth {depth}")
         move = find_best_move(board, depth, total_time_remaining)
-        if move in legal_moves:
+        if move in legal_moves_list:
             best_move = move
         else:
             print("info string No legal moves found")
@@ -338,64 +338,78 @@ def find_best_move_iterative(board, max_depth, total_time_remaining):
 
         # Stop early if mate found
         if best_move is not None:
-            board.push(best_move)
-            if board.is_checkmate():
-                board.pop()
+            board.apply(best_move)
+            if board in CHECKMATE:
+                board.undo()
                 break
-            board.pop()
+            board.undo()
 
     return best_move
 
-# UCI-compatible engine
 def main():
-    board = chess.Board()
+    board = Board()
     depth = 6
 
     while True:
-        line = sys.stdin.readline().strip()
-        if line == "uci":
-            print("id name OmbleCavalier")
-            print("id author Hughes Perreault")
-            print("uciok")
-            sys.stdout.flush()
-        elif line == "isready":
-            print("readyok")
-            sys.stdout.flush()
-        elif line == "ucinewgame":
-            board.reset()
-        elif line.startswith("position"):
-            tokens = line.split()
-            if "startpos" in tokens:
-                board.reset()
-                if "moves" in tokens:
-                    moves_index = tokens.index("moves") + 1
-                    for move_str in tokens[moves_index:]:
-                        board.push_uci(move_str)
-        elif line.startswith("go"):
-            tokens = line.split()
-            total_time_remaining = 50  # Default total time in seconds
+        try:
+            line = sys.stdin.readline()
+            if not line:
+                break
+            line = line.strip()
 
-            if "depth" in tokens:
-                depth_index = tokens.index("depth") + 1
-                depth = int(tokens[depth_index])
-            if "wtime" in tokens and board.turn:  # White's time remaining
-                time_index = tokens.index("wtime") + 1
-                total_time_remaining = int(tokens[time_index]) / 1000  # Convert milliseconds to seconds
-            if "btime" in tokens and not board.turn:  # Black's time remaining
-                time_index = tokens.index("btime") + 1
-                total_time_remaining = int(tokens[time_index]) / 1000  # Convert milliseconds to seconds
+            if line == "uci":
+                print("id name OmbleCavalier")
+                print("id author Hughes Perreault")
+                print("uciok")
+                sys.stdout.flush()
 
-            best_move = find_best_move_iterative(board, depth, total_time_remaining)
-            if best_move is not None:
-                print(f"bestmove {best_move.uci()}")
+            elif line == "isready":
+                print("readyok")
+                sys.stdout.flush()
+
+            elif line == "ucinewgame":
+                board = Board.from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+
+            elif line.startswith("position"):
+                tokens = line.split()
+                if "startpos" in tokens:
+                    board = Board.from_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1")
+                    if "moves" in tokens:
+                        moves_index = tokens.index("moves") + 1
+                        for move_str in tokens[moves_index:]:
+                            move = Move.from_uci(move_str)
+                            board.apply(move)
+
+            elif line.startswith("go"):
+                tokens = line.split()
+                total_time_remaining = 50  # default in seconds
+
+                if "depth" in tokens:
+                    depth_index = tokens.index("depth") + 1
+                    depth = int(tokens[depth_index])
+                if "wtime" in tokens and board.turn == WHITE:
+                    time_index = tokens.index("wtime") + 1
+                    total_time_remaining = int(tokens[time_index]) / 1000
+                if "btime" in tokens and not board.turn == WHITE:
+                    time_index = tokens.index("btime") + 1
+                    total_time_remaining = int(tokens[time_index]) / 1000
+
+                best_move = find_best_move_iterative(board, depth, total_time_remaining)
+                if best_move is not None:
+                    print(f"bestmove {best_move.uci()}")
+                else:
+                    print("bestmove 0000")
+                sys.stdout.flush()
+
+            elif line == "quit":
+                break
+
             else:
-                print("bestmove 0000")  # Indicate no legal moves
-            sys.stdout.flush()
-        elif line == "quit":
-            break
+                print(f"info string Unknown command: {line}")
+                sys.stdout.flush()
 
-        else:
-            print(f"info string Unknown command: {line}")
+        except Exception as e:
+            print(f"info string Exception: {e}")
             sys.stdout.flush()
 
 if __name__ == "__main__":
