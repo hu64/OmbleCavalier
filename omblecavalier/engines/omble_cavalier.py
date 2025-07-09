@@ -285,7 +285,7 @@ def find_best_move(board, depth, total_time_remaining):
     alpha = -float('inf')
     beta = float('inf')
 
-    time_limit = total_time_remaining / 25
+    time_limit = min(max(0.05 * total_time_remaining, 0.5), total_time_remaining / 10) 
     start_time = time.time()
 
     for move in order_moves(board):
