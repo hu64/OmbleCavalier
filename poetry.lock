@@ -33,17 +33,6 @@ files = [
 ]
 
 [[package]]
-name = "chess"
-version = "1.11.2"
-description = "A chess library with move generation and validation, Polyglot opening book probing, PGN reading and writing, Gaviota tablebase probing, Syzygy tablebase probing, and XBoard/UCI engine communication."
-optional = false
-python-versions = ">=3.8"
-groups = ["main"]
-files = [
-    {file = "chess-1.11.2.tar.gz", hash = "sha256:a8b43e5678fdb3000695bdaa573117ad683761e5ca38e591c4826eba6d25bb39"},
-]
-
-[[package]]
 name = "colorama"
 version = "0.4.6"
 description = "Cross-platform colored terminal text."
@@ -250,4 +239,4 @@ type = ["importlib_metadata (>=7.0.2) ; python_version < \"3.10\"", "jaraco.deve
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13,<3.14"
-content-hash = "0a3e91ac357b6c1dc79798e8a361e5f090179a2c2fc6b4878237895a8fad8b1a"
+content-hash = "1bb4f36416556220c1403b181d704380b0d77a3049c75fecdbaf32578ab11764"
