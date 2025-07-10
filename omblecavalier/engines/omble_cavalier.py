@@ -137,85 +137,12 @@ def evaluate_board(board, ply_from_root=0):
             board[WHITE, piece_type].__len__() * MATERIAL_VALUES[piece_type]
         ) - (board[BLACK, piece_type].__len__() * MATERIAL_VALUES[piece_type])
 
-        # for square in board.pieces(piece_type, chess.WHITE):
-        #     rank = 7 - chess.square_rank(square)
-        #     file = chess.square_file(square)
-
-        #     material_score += MATERIAL_VALUES[piece_type] + pst_2d[piece_type][rank][file]
-
-        # for square in board.pieces(piece_type, chess.BLACK):
-        #     rank = chess.square_rank(square)
-        #     file = chess.square_file(square)
-        #     material_score -= MATERIAL_VALUES[piece_type] + pst_2d[piece_type][rank][file]
-
-    # if board.is_repetition(3) or board.is_stalemate() or board.is_insufficient_material() or board.can_claim_draw():
-    #     return -200 if material_score >= 200 else 0
-
     score += material_score if board.turn == WHITE else -material_score
-
-    # nbr_doubled_pawns = count_doubled_pawns(board, board.turn) - count_doubled_pawns(board, not board.turn)
-    # nbr_isolated_pawns = count_isolated_pawns(board, board.turn) - count_isolated_pawns(board, not board.turn)
-    # nbr_blocked_pawns = count_blocked_pawns(board, board.turn) - count_blocked_pawns(board, not board.turn)
-    # DSI = 50 * (nbr_doubled_pawns + nbr_isolated_pawns + nbr_blocked_pawns)
-    # score += DSI
 
     mobility_score = 10 * len(list(board.legal_moves()))
     score += mobility_score if board.turn == WHITE else -mobility_score
 
     return score
-
-
-def count_doubled_pawns(board, color):
-    """Count doubled pawns for a given color."""
-    pawns = board.pieces(chess.PAWN, color)
-    files = set()
-    doubled_count = 0
-    for square in pawns:
-        file_index = chess.square_file(square)
-        if file_index in files:
-            doubled_count += 1
-        else:
-            files.add(file_index)
-    return doubled_count
-
-
-def count_isolated_pawns(board, color):
-    """Count isolated pawns for a given color."""
-    pawns = board.pieces(chess.PAWN, color)
-    isolated_count = 0
-    for square in pawns:
-        file_index = chess.square_file(square)
-        rank_index = chess.square_rank(square)
-
-        # Check if there are no pawns on adjacent files
-        left_file = file_index - 1
-        right_file = file_index + 1
-
-        has_left_pawn = left_file >= 0 and any(
-            chess.square(left_file, rank) in pawns for rank in range(8)
-        )
-        has_right_pawn = right_file <= 7 and any(
-            chess.square(right_file, rank) in pawns for rank in range(8)
-        )
-
-        if not (has_left_pawn or has_right_pawn):
-            isolated_count += 1
-
-    return isolated_count
-
-
-def count_blocked_pawns(board, color):
-    """Count blocked pawns for a given color."""
-    pawns = board.pieces(chess.PAWN, color)
-    blocked_count = 0
-    for square in pawns:
-        # Check if the pawn is blocked by a piece in front of it
-        if color == chess.WHITE and board.piece_at(square + 8) is not None:
-            blocked_count += 1
-        elif color == chess.BLACK and board.piece_at(square - 8) is not None:
-            blocked_count += 1
-    return blocked_count
-
 
 def get_piece_value(board, square):
     pt = board[square].piece_type
