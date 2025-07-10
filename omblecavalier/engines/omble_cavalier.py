@@ -312,53 +312,40 @@ def find_best_move(board, depth, start_time, time_limit):
     alpha = -float("inf")
     beta = float("inf")
 
-    window_size = 50
-    alpha = prev_score - window_size
-    beta = prev_score + window_size
-
-    legal_moves = order_moves(board)
-    for move in legal_moves:
+    for move in order_moves(board):
         board.apply(move)
-        score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root=1)
+        score = negamax(
+            board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root=1
+        )
         board.undo()
-
         if score is None:
             return None
-
-        score = -score
-
-        # Fail-soft handling
-        if score <= alpha:
-            print("info string fail-low, widening window")
-            alpha = -float("inf")
-            beta = prev_score + 300
-            board.apply(move)
-            score = -negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root=1)
-            board.undo()
-        elif score >= beta:
-            print("info string fail-high, widening window")
-            alpha = prev_score - 300
-            beta = float("inf")
-            board.apply(move)
-            score = -negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root=1)
-            board.undo()
+        else:
+            score = -score
 
         if score > best_score:
             best_score = score
             best_move = move
 
-        # Info output
+        alpha = max(alpha, score)
+
         if abs(score) > 99900:
+            # Mate score: convert distance-to-mate from score
             mate_in = 100000 - abs(score)
             sign = 1 if score > 0 else -1
             print(f"info score mate {sign * (mate_in + 1)} pv {move.uci()}")
         else:
             print(f"info score cp {score} pv {move.uci()}")
 
-        if best_score > 99900 or time.time() - start_time > time_limit:
+        # Early cutoff on mate found
+        if best_score > 99900:
             break
 
-    return best_move, best_score
+        if time.time() - start_time > time_limit:
+            break
+
+    return best_move
+
 
 def find_best_move_iterative(board, max_depth, total_time_remaining):
     
@@ -371,8 +358,6 @@ def find_best_move_iterative(board, max_depth, total_time_remaining):
         return None
 
     best_move = legal_moves_list[0]
-    prev_score = 0
-
     for depth in range(1, max_depth + 1):
         print(f"info string Searching at depth {depth}")
         move = find_best_move(board, depth, start_time, time_limit)
@@ -382,11 +367,13 @@ def find_best_move_iterative(board, max_depth, total_time_remaining):
             print("info string No legal moves found")
             break
 
-        board.apply(best_move)
-        if board in CHECKMATE:
+        # Stop early if mate found
+        if best_move is not None:
+            board.apply(best_move)
+            if board in CHECKMATE:
+                board.undo()
+                break
             board.undo()
-            break
-        board.undo()
 
     return best_move
 
