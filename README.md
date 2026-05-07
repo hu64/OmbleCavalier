@@ -41,6 +41,65 @@ Can run on:
 - Windows, Linux and MacOS
 - Docker
 
+## Included Engines
+
+This repository includes two example chess engines that can be used with lichess-bot:
+
+### ♞ OmbleCavalierPlusPlus (C++)
+A modern C++ chess engine with UCI protocol support.
+
+**Features:**
+- UCI protocol compatibility
+- Polyglot opening book support
+- Iterative deepening with alpha-beta pruning
+- Transposition table (hash table)
+- Killer move & history heuristics
+- MVV-LVA and check bonuses for move ordering
+- Bitboard-based fast evaluation
+- Built-in puzzle test suite
+- Benchmarking utility
+
+**Build Requirements:**
+- C++20 compiler (GCC, Clang, or MSVC)
+- CMake 3.10+
+- Disservin's chess.hpp library (included)
+
+**Build & Run:**
+```bash
+cd src/OmbleCavalierPlusPlus
+mkdir build && cd build
+cmake ..
+make
+./omble_cavalier++
+```
+
+### ♞ OmbleCavalier (Python)
+A UCI-compatible chess engine written in Python with negamax search.
+
+**Features:**
+- UCI protocol support
+- Negamax search with alpha-beta pruning
+- Quiescence search
+- Move ordering heuristics
+- Transposition table
+- Polyglot opening book support
+- Lightweight evaluation (material, mobility)
+- Random-move engine for testing
+- Puzzle-based testing with pytest
+
+**Setup & Run:**
+```bash
+cd src/OmbleCavalierPython
+poetry install
+poetry run python omblecavalier/engines/omble_cavalier.py
+```
+
+**Build Executable:**
+```bash
+poetry shell
+pyinstaller --onefile --distpath engines omblecavalier/engines/omble_cavalier.py
+```
+
 ## Steps
 1. [Install lichess-bot](https://github.com/lichess-bot-devs/lichess-bot/wiki/How-to-Install)
 2. [Create a lichess OAuth token](https://github.com/lichess-bot-devs/lichess-bot/wiki/How-to-create-a-Lichess-OAuth-token)
