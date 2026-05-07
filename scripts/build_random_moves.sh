@@ -1,0 +1,1 @@
+pyinstaller --onefile --distpath engines src/OmbleCavalierPython/omblecavalier/engines/uci_random_moves.py --collect-all bulletchess

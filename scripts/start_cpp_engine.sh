@@ -1,0 +1,1 @@
+.venv/bin/python lichess-bot.py --config config_cpp.yml

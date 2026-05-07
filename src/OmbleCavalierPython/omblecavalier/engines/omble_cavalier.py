@@ -17,11 +17,6 @@ from bulletchess import (
     Move,
 )
 
-from omblecavalier.engines import evaluate_board_cy
-
-evaluate_board_cy.init_material_values()
-evaluate_board_cy.init_PST()
-
 logging.basicConfig(level=logging.DEBUG)
 
 # Material values
@@ -240,7 +235,7 @@ def main():
     depth = 30
 
     try:
-        book = chess.polyglot.open_reader("baron30.bin")
+        book = chess.polyglot.open_reader("books/gm2001.bin")
     except Exception as e:
         book = None
         logging.warning(f"Could not open Polyglot book: {e}")

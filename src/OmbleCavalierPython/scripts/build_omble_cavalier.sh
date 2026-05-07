@@ -1,1 +1,0 @@
-pyinstaller --onefile --distpath engines omblecavalier/engines/omble_cavalier.py --collect-all bulletchess

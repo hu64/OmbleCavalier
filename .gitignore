@@ -9,3 +9,11 @@ lichess_bot_auto_logs/*
 *.log
 *.txt
 TEMP/*
+build/*
+dist/*
+*.spec
+*.so
+*.dll
+*.dylib
+*.o
+*.obj
