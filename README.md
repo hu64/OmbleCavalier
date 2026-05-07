@@ -100,6 +100,31 @@ poetry shell
 pyinstaller --onefile --distpath engines omblecavalier/engines/omble_cavalier.py
 ```
 
+## Elo Improvement Roadmap
+
+### Feature Parity First (Highest Priority)
+
+To keep both engines aligned, these features should be implemented across both:
+
+**Python engine needs to catch up:**
+1. **Iterative Deepening** — C++ has it; Python uses fixed depth. Estimated +30-40 Elo and enables time management
+2. **Killer Move Heuristics** — C++ has it; improves move ordering. Estimated +20-30 Elo
+3. **History Heuristics** — C++ has it; refines move ordering. Estimated +15-25 Elo
+4. **MVV-LVA Move Ordering** — C++ has it; prioritizes captures. Estimated +10-20 Elo
+5. **Check Detection in Move Ordering** — C++ has bonus for checks; add to Python. Estimated +10-15 Elo
+6. **Null Move Pruning** — C++ has it; Python doesn't. Estimated +25-35 Elo
+7. **Built-in Benchmarking Utility** — C++ has it; add to Python for testing parity
+
+
+### Additional Elo Improvements (After Parity)
+
+Once both engines have feature parity, these optimizations apply to both:
+
+1. **Late Move Reduction (LMR)** — Reduce search depth for late quiet moves. Estimated +50-80 Elo
+2. **Aspiration Windows** — Use tight alpha-beta windows based on previous iteration. Estimated +20-40 Elo
+3. **Razoring/Futility Pruning** — Prune obviously bad positions. Estimated +30-50 Elo (C++ only for now; Python needs iterative deepening first)
+4. **Advanced Evaluation** — Pawn structure analysis, king safety, tropism. Estimated +40-60 Elo
+
 ## Steps
 1. [Install lichess-bot](https://github.com/lichess-bot-devs/lichess-bot/wiki/How-to-Install)
 2. [Create a lichess OAuth token](https://github.com/lichess-bot-devs/lichess-bot/wiki/How-to-create-a-Lichess-OAuth-token)
