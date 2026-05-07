@@ -124,6 +124,47 @@ Once both engines have feature parity, these optimizations apply to both:
 2. **Aspiration Windows** — Use tight alpha-beta windows based on previous iteration. Estimated +20-40 Elo
 3. **Razoring/Futility Pruning** — Prune obviously bad positions. Estimated +30-50 Elo (C++ only for now; Python needs iterative deepening first)
 4. **Advanced Evaluation** — Pawn structure analysis, king safety, tropism. Estimated +40-60 Elo
+5. **Endgame Tablebase Support** — Already enabled in lichess-bot config! Estimated +50-100 Elo in endgames
+
+## Known Issues & Logic Differences
+
+### Critical Bugs Found
+
+1. **Python Engine - Terminal Node Detection (HIGH PRIORITY)**
+   - **Issue**: Python checks `if board in CHECKMATE/DRAW` in evaluation, but this doesn't catch all draws (50-move rule, repetition)
+   - **C++ Approach**: Correctly checks `isRepetition(1)`, `isInsufficientMaterial()`, `isHalfMoveDraw()` separately in search
+   - **Impact**: Python engine may be playing drawn positions as if they're playable (~40 Elo loss in long games)
+   - **Fix**: Import repetition/draw tracking from board state into Python engine
+
+2. **Quiescence Search - Beta Cutoff Logic (MEDIUM)**
+   - **Python**: Returns `beta` on beta cutoff but should return actual `score`
+   - **C++**: Correctly returns `stand_pat` on beta cutoff 
+   - **Impact**: Minor evaluation inaccuracy in endgames
+   - **Fix**: Change `return beta` to `return stand_pat` when `score >= beta` in Python
+
+3. **Python Engine - Mobility Calculation (MEDIUM)**
+   - **Issue**: Recalculates `legal_moves()` every time in `evaluate_board()` which is expensive and called frequently
+   - **Impact**: Massive performance penalty (50-100 ms per position)
+   - **Fix**: Pass pre-calculated move count or cache it
+
+### Logic Differences (Not Bugs, But Divergent)
+
+| Feature | C++ (OmbleCavalierPlusPlus) | Python (OmbleCavalier) | Impact |
+|---------|--------|---------|--------|
+| **Evaluation** | Material + PST + Pawn Structure + King Safety + Bishop Pair | Material + Mobility Only | C++ is ~100+ Elo stronger |
+| **Move Ordering** | MVV-LVA, Killer Moves, History Heuristics, Check Bonus | Basic sorting by capture value | C++ searches 50%+ fewer nodes |
+| **Null Move Pruning** | ✓ Implemented | ✗ Missing | C++ searches faster |
+| **Terminal Detection** | Comprehensive (repetition, draw, mate) | Incomplete (only checks final state) | Python misses draws mid-game |
+| **Quiescence** | Includes checks as forcing moves | Capture-only | Both acceptable but different |
+| **Transposition Table** | Full UCI/depth integration | Basic hash lookup | Both functional but different depths |
+
+### Recommended Harmonization Order
+
+1. **First**: Fix Python's terminal node detection (critical draw bug)
+2. **Second**: Fix Python's quiescence cutoff logic  
+3. **Third**: Add mobility caching to Python
+4. **Then**: Add matching evaluation terms to Python (PST, pawn structure)
+5. **Finally**: Add matching search techniques (null move, killer moves)
 
 ## Steps
 1. [Install lichess-bot](https://github.com/lichess-bot-devs/lichess-bot/wiki/How-to-Install)
