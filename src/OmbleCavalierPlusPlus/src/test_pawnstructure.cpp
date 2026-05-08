@@ -46,14 +46,16 @@ bool testPassedPawnsBlack()
 {
     Board board;
     board.setFen("k7/5p2/5p2/8/7p/8/P1P5/K7 w - - 0 1");
-    return countPassedPawns(board, Color::BLACK) == 2;
+    // f7, f6, h4 are all passed (only opponent pawns block passage; own doubled pawn doesn't)
+    return countPassedPawns(board, Color::BLACK) == 3;
 }
 
 bool testPassedPawnsBlackBlockedbyKnight()
 {
     Board board;
     board.setFen("k7/5p2/5p2/5n2/7p/8/P1P5/K7 w - - 0 1");
-    return countPassedPawns(board, Color::BLACK) == 2;
+    // Knight is not a pawn — same 3 passed pawns as without the knight
+    return countPassedPawns(board, Color::BLACK) == 3;
 }
 
 int main(int argc, char *argv[])

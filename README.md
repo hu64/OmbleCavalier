@@ -32,10 +32,11 @@ The engine receives UCI commands from lichess-bot, sets up the board using [Diss
 | | Killer move heuristic (2 per ply) |
 | | Check bonus |
 | | History heuristic |
-| **Evaluation** | Material values |
-| | Piece-square tables (6 tables) |
-| | Pawn structure (doubled, isolated, passed) |
-| | King safety (pawn shield, open files) |
+| **Evaluation** | PESTO tapered evaluation (MG/EG interpolation via game phase) |
+| | 12 piece-square tables (6 MG + 6 EG, Rofchade PESTO values) |
+| | Separate MG/EG material values |
+| | Pawn structure — phase-weighted (doubled, isolated, rank-scaled passed) |
+| | King safety — phase-weighted (pawn shield, open files, pawn storm) |
 | | Bishop pair bonus |
 | | Mobility |
 | **Infrastructure** | Fixed-size transposition table (~24 MB) |
@@ -93,7 +94,7 @@ A Python engine at feature parity with the C++ version. Slower by nature (~10× 
 
 ### How it works
 
-Uses [bulletchess](https://github.com/zedeckj/bulletchess) for fast board representation and move generation (Rust-backed). The search is identical in structure to the C++ engine: **iterative deepening negamax** with **alpha-beta pruning**, aspiration windows, null move pruning, and **Late Move Reduction**. Evaluation uses precomputed per-square lookup tables (`_W_TABLES`, `_B_TABLES`) that merge material + PST values to minimize per-node arithmetic. Quiescence search uses a fast evaluation path (material + PST + bishop pair only) to avoid calling expensive pawn structure code on every tactical node.
+Uses [bulletchess](https://github.com/zedeckj/bulletchess) for fast board representation and move generation (Rust-backed). The search is identical in structure to the C++ engine: **iterative deepening negamax** with **alpha-beta pruning**, aspiration windows, null move pruning, and **Late Move Reduction**. Evaluation uses **PESTO tapered evaluation** with precomputed per-square lookup tables (`_W_MG`, `_W_EG`, `_B_MG`, `_B_EG`) that merge material + PST values to minimize per-node arithmetic. A two-tier evaluation strategy uses the full PESTO evaluation (including pawn structure and king safety) at the quiescence entry node, and a lighter material+PST-only path for recursive quiescence nodes.
 
 ### Features
 
@@ -108,12 +109,14 @@ Uses [bulletchess](https://github.com/zedeckj/bulletchess) for fast board repres
 | **Move ordering** | MVV-LVA capture ordering |
 | | Killer move heuristic (2 per ply) |
 | | History heuristic |
-| **Evaluation** | Precomputed material + PST lookup tables |
-| | Pawn structure (doubled, isolated, passed) |
-| | King safety (pawn shield, open files) |
+| **Evaluation** | PESTO tapered evaluation (MG/EG interpolation via game phase) |
+| | 12 precomputed per-square lookup tables (6 MG + 6 EG) |
+| | Separate MG/EG material values |
+| | Pawn structure — phase-weighted (doubled, isolated, rank-scaled passed) |
+| | King safety — phase-weighted (pawn shield, open files, pawn storm) |
 | | Bishop pair bonus |
 | | Mobility |
-| | Two-tier eval (fast in quiescence, full in main search) |
+| | Two-tier eval (full PESTO at quiescence entry, fast PST-only inside quiescence) |
 | **Infrastructure** | Dictionary-based transposition table |
 | | Polyglot opening book (`gm2001.bin`) |
 | | Adaptive time management |
@@ -196,12 +199,13 @@ Ranked by estimated Elo gain per implementation effort. _Both engines_ unless no
 
 ### Tier 2 — Evaluation improvements (~1–3h each)
 
+- [x] **Tapered evaluation (PESTO)** — Full MG/EG interpolation using a phase score derived from remaining material. 12 piece-square tables (Rofchade PESTO values), separate MG/EG material values. _Both engines._
+- [x] **Passed pawn rank scaling** — Bonuses now scale with advancement rank: `MG [0,5,10,20,35,55,80,0]`, `EG [0,15,25,50,80,125,175,0]`. _Both engines._
+- [x] **Gate king safety on game phase** — King safety penalties scale by `phase/24`; fade to zero in endgames where the king EG PST takes over. _Both engines._
+- [x] **Endgame King PST** — Dedicated EG king table rewards centralization; blended via tapered eval. _Both engines._
 - [ ] **Rook on open / semi-open file** — Rook with no friendly pawns on its file: +15 (open), +10 (semi-open). Est. +25 Elo. _Both engines._
-- [ ] **Passed pawn rank scaling** — Current flat +20 bonus should scale with advancement rank (e.g. `[0,10,15,20,30,50,80,0]`). Est. +15 Elo. _Both engines._
-- [ ] **Gate king safety on game phase** — Suppress pawn shield penalty when little material remains (king should be active in endgame). Est. +10 Elo. _Both engines._
 - [ ] **Rook on 7th rank** — +20 bonus per rook on rank 7 (rank 2 for Black). Est. +10 Elo. _Both engines._
 - [ ] **Two-sided mobility** — Currently only the side-to-move's legal move count is used. Differencing both sides gives a more accurate positional bonus. _Both engines._
-- [ ] **Tapered evaluation** — Blend all PSTs and king safety between midgame/endgame sets using a material phase score. Est. +25 Elo. _Both engines._
 
 ### Tier 2 — Search improvements
 
@@ -243,6 +247,7 @@ _None._
 - ~~**Python — No null move pruning**~~ Fixed: implemented via FEN turn-swap.
 - ~~**Python — No aspiration windows**~~ Fixed.
 - ~~**Python — Poor time management**~~ Fixed: matches C++ formula (move number, increment, reserve).
+- ~~**Both — Passed pawn detection included own pawns**~~ Fixed: the front-span check previously used `allPawns` (own + opponent), so a doubled pawn's rear pawn was always marked as not passed. Now checks only opponent pawns, matching the standard definition.
 
 ---
 

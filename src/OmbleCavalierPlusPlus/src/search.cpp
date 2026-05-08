@@ -90,8 +90,8 @@ int negamax(Board &board, int depth, int alpha, int beta,
     {
         int nonPawnMaterial = 0;
         for (PieceType pt : {PieceType::KNIGHT, PieceType::BISHOP, PieceType::ROOK, PieceType::QUEEN})
-            nonPawnMaterial += MATERIAL_VALUES[(int)pt] * board.pieces(pt, board.sideToMove()).count();
-        if (nonPawnMaterial >= 2 * MATERIAL_VALUES[(int)PieceType::ROOK])
+            nonPawnMaterial += MG_VALUES[(int)pt] * board.pieces(pt, board.sideToMove()).count();
+        if (nonPawnMaterial >= 2 * MG_VALUES[(int)PieceType::ROOK])
         {
             board.makeNullMove();
             int nullScore = -negamax(board, depth - 3, -beta, -beta + 1, start, timeLimit, plyFromRoot + 1, timedOut);

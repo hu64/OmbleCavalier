@@ -25,97 +25,163 @@ SQ_TO_INT = {sq: i for i, sq in enumerate(SQUARES)}
 # Vertical mirror for Black PST lookup: sq -> mirrored_sq
 MIRROR = [(7 - sq // 8) * 8 + sq % 8 for sq in range(64)]
 
-MATERIAL_VALUES = {
-    PIECE_TYPES[0]: 100,    # PAWN
-    PIECE_TYPES[1]: 320,    # KNIGHT
-    PIECE_TYPES[2]: 330,    # BISHOP
-    PIECE_TYPES[3]: 500,    # ROOK
-    PIECE_TYPES[4]: 900,    # QUEEN
-    PIECE_TYPES[5]: 60000,  # KING
-}
+# Tapered evaluation material values (centipawns)
+MG_VALUES = [82, 337, 365, 477, 1025, 0]   # pawn … king
+EG_VALUES = [94, 281, 297, 512,  936, 0]
+
+# For MVV-LVA move ordering (use MG values; king=0 is fine for legal moves)
+_MV_ORDER = {pt: MG_VALUES[i] for i, pt in enumerate(PIECE_TYPES)}
 
 MATE_SCORE = 100000
 MAX_PLY = 128
 
-# PST tables from White's perspective (a1=0, h8=63).
-# For Black pieces, index with MIRROR[sq_int] to flip vertically.
-PAWN_PST = [
-     0,  0,  0,  0,  0,  0,  0,  0,  # rank 1
-     5, 10, 10,-20,-20, 10, 10,  5,  # rank 2
-     5, -5,-10,  0,  0,-10, -5,  5,  # rank 3
-     0,  0,  0, 20, 20,  0,  0,  0,  # rank 4
-     5,  5, 10, 25, 25, 10,  5,  5,  # rank 5
-    10, 10, 20, 30, 30, 20, 10, 10,  # rank 6
-    50, 50, 50, 50, 50, 50, 50, 50,  # rank 7
-     0,  0,  0,  0,  0,  0,  0,  0,  # rank 8
+# Phase weights: N=1, B=1, R=2, Q=4.  Max total phase = 24.
+_PHASE_WEIGHTS = [0, 1, 1, 2, 4, 0]
+
+# -----------------------------------------------------------------------
+# PESTO piece-square tables (a1=0 format: rank 1 first, rank 8 last).
+# White pieces use sq_int directly.
+# Black pieces use MIRROR[sq_int] to flip vertically.
+# Values are positional bonuses only; material is added separately.
+# -----------------------------------------------------------------------
+
+MG_PAWN_PST = [
+      0,   0,   0,   0,   0,   0,   0,   0,  # rank 1
+    -35,  -1, -20, -23, -15,  24,  38, -22,  # rank 2
+    -26,  -4,  -4, -10,   3,   3,  33, -12,  # rank 3
+    -27,  -2,  -5,  12,  17,   6,  10, -25,  # rank 4
+    -14,  13,   6,  21,  23,  12,  17, -23,  # rank 5
+     -6,   7,  26,  31,  65,  56,  25, -20,  # rank 6
+     98, 134,  61,  95,  68, 126,  34, -11,  # rank 7
+      0,   0,   0,   0,   0,   0,   0,   0,  # rank 8
+]
+EG_PAWN_PST = [
+      0,   0,   0,   0,   0,   0,   0,   0,  # rank 1
+     13,   8,   8,  10,  13,   0,   2,  -7,  # rank 2
+      4,   7,  -6,   1,   0,  -5,  -1,  -8,  # rank 3
+     13,   9,  -3,  -7,  -7,  -8,   3,  -1,  # rank 4
+     32,  24,  13,   5,  -2,   4,  17,  17,  # rank 5
+     94, 100,  85,  67,  56,  53,  82,  84,  # rank 6
+    178, 173, 158, 134, 147, 132, 165, 187,  # rank 7
+      0,   0,   0,   0,   0,   0,   0,   0,  # rank 8
+]
+MG_KNIGHT_PST = [
+    -105, -21, -58, -33, -17, -28, -19,  -23,  # rank 1
+     -29, -53, -12,  -3,  -1,  18, -14,  -19,  # rank 2
+     -23,  -9,  12,  10,  19,  17,  25,  -16,  # rank 3
+     -13,   4,  16,  13,  28,  19,  21,   -8,  # rank 4
+      -9,  17,  19,  53,  37,  69,  18,   22,  # rank 5
+     -47,  60,  37,  65,  84, 129,  73,   44,  # rank 6
+     -73, -41,  72,  36,  23,  62,   7,  -17,  # rank 7
+    -167, -89, -34, -49,  61, -97, -15, -107,  # rank 8
+]
+EG_KNIGHT_PST = [
+     -29, -51, -23, -15, -22, -18, -50, -64,  # rank 1
+     -42, -20, -10,  -5,  -2, -20, -23, -44,  # rank 2
+     -23,  -3,  -1,  15,  10,  -3, -20, -22,  # rank 3
+     -18,  -6,  16,  25,  16,  17,   4, -18,  # rank 4
+     -17,   3,  22,  22,  22,  11,   8, -18,  # rank 5
+     -24, -20,  10,   9,  -1,  -9, -19, -41,  # rank 6
+     -25,  -8, -25,  -2,  -9, -25, -24, -52,  # rank 7
+     -58, -38, -13, -28, -31, -27, -63, -99,  # rank 8
+]
+MG_BISHOP_PST = [
+     -33,  -3, -14, -21, -13, -12, -39, -21,  # rank 1
+       4,  15,  16,   0,   7,  21,  33,   1,  # rank 2
+       0,  15,  15,  15,  14,  27,  18,  10,  # rank 3
+      -6,  13,  13,  26,  34,  12,  10,   4,  # rank 4
+      -4,   5,  19,  50,  37,  37,   7,  -2,  # rank 5
+     -16,  37,  43,  40,  35,  50,  37,  -2,  # rank 6
+     -26,  16, -18, -13,  30,  59,  18, -47,  # rank 7
+     -29,   4, -82, -37, -25, -42,   7,  -8,  # rank 8
+]
+EG_BISHOP_PST = [
+     -23,  -9, -23,  -5,  -9, -16,  -5, -17,  # rank 1
+     -14, -18,  -7,  -1,   4,  -9, -15, -27,  # rank 2
+     -12,  -3,   8,  10,  13,   3,  -7, -15,  # rank 3
+      -6,   3,  13,  19,   7,  10,  -3,  -9,  # rank 4
+      -3,   9,  12,   9,  14,  10,   3,   2,  # rank 5
+       2,  -8,   0,  -1,  -2,   6,   0,   4,  # rank 6
+      -8,  -4,   7, -12,  -3, -13,  -4, -14,  # rank 7
+     -14, -21, -11,  -8,  -7,  -9, -17, -24,  # rank 8
+]
+MG_ROOK_PST = [
+     -19, -13,   1,  17,  16,   7, -37, -26,  # rank 1
+     -44, -16, -20,  -9,  -1,  11,  -6, -71,  # rank 2
+     -45, -25, -16, -17,   3,   0,  -5, -33,  # rank 3
+     -36, -26, -12,  -1,   9,  -7,   6, -23,  # rank 4
+     -24, -11,   7,  26,  24,  35,  -8, -20,  # rank 5
+      -5,  19,  26,  36,  17,  45,  61,  16,  # rank 6
+      27,  32,  58,  62,  80,  67,  26,  44,  # rank 7
+      32,  42,  32,  51,  63,   9,  31,  43,  # rank 8
+]
+EG_ROOK_PST = [
+      -9,   2,   3,  -1,  -5, -13,   4, -20,  # rank 1
+      -6,  -6,   0,   2,  -9,  -9, -11,  -3,  # rank 2
+      -4,   0,  -5,  -1,  -7, -12,  -8, -16,  # rank 3
+       3,   5,   8,   4,  -5,  -6,  -8, -11,  # rank 4
+       4,   3,  13,   1,   2,   1,  -1,   2,  # rank 5
+       7,   7,   7,   5,   4,  -3,  -5,  -3,  # rank 6
+      11,  13,  13,  11,  -3,   3,   8,   3,  # rank 7
+      13,  10,  18,  15,  12,  12,   8,   5,  # rank 8
+]
+MG_QUEEN_PST = [
+      -1, -18,  -9,  10, -15, -25, -31, -50,  # rank 1
+     -35,  -8,  11,   2,   8,  15,  -3,   1,  # rank 2
+     -14,   2, -11,  -2,  -5,   2,  14,   5,  # rank 3
+      -9, -26,  -9, -10,  -2,  -4,   3,  -3,  # rank 4
+     -27, -27, -16, -16,  -1,  17,  -2,   1,  # rank 5
+     -13, -17,   7,   8,  29,  56,  47,  57,  # rank 6
+     -24, -39,  -5,   1, -16,  57,  28,  54,  # rank 7
+     -28,   0,  29,  12,  59,  44,  43,  45,  # rank 8
+]
+EG_QUEEN_PST = [
+     -33, -28, -22, -43,  -5, -32, -20, -41,  # rank 1
+     -22, -23, -30, -16, -16, -23, -36, -32,  # rank 2
+     -16, -27,  15,   6,   9,  17,  10,   5,  # rank 3
+     -18,  28,  19,  47,  31,  34,  39,  23,  # rank 4
+       3,  22,  24,  45,  57,  40,  57,  36,  # rank 5
+     -20,   6,   9,  49,  47,  35,  19,   9,  # rank 6
+     -17,  20,  32,  41,  58,  25,  30,   0,  # rank 7
+      -9,  22,  22,  27,  27,  19,  10,  20,  # rank 8
+]
+MG_KING_PST = [
+     -15,  36,  12, -54,   8, -28,  24,  14,  # rank 1
+       1,   7,  -8, -64, -43, -16,   9,   8,  # rank 2
+     -14, -14, -22, -46, -44, -30, -15, -27,  # rank 3
+     -49,  -1, -27, -39, -46, -44, -33, -51,  # rank 4
+     -17, -20, -12, -27, -30, -25, -14, -36,  # rank 5
+      -9,  24,   2, -16, -20,   6,  22, -22,  # rank 6
+      29,  -1, -20,  -7,  -8,  -4, -38, -29,  # rank 7
+     -65,  23,  16, -15, -56, -34,   2,  13,  # rank 8
+]
+EG_KING_PST = [
+     -53, -34, -21, -11, -28, -14, -24, -43,  # rank 1
+     -27, -11,   4,  13,  14,   4,  -5, -17,  # rank 2
+     -19,  -3,  11,  21,  23,  16,   7,  -9,  # rank 3
+     -18,  -4,  21,  24,  27,  23,   9, -11,  # rank 4
+      -8,  22,  24,  27,  26,  33,  26,   3,  # rank 5
+      10,  17,  23,  15,  20,  45,  44,  13,  # rank 6
+     -12,  17,  14,  17,  17,  38,  23,  11,  # rank 7
+     -74, -35, -18, -18, -11,  15,   4, -17,  # rank 8
 ]
 
-KNIGHT_PST = [
-    -50,-40,-30,-30,-30,-30,-40,-50,  # rank 1
-    -40,-20,  0,  5,  5,  0,-20,-40,  # rank 2
-    -30,  5, 10, 15, 15, 10,  5,-30,  # rank 3
-    -30,  0, 15, 20, 20, 15,  0,-30,  # rank 4
-    -30,  5, 15, 20, 20, 15,  5,-30,  # rank 5
-    -30,  0, 10, 15, 15, 10,  0,-30,  # rank 6
-    -40,-20,  0,  0,  0,  0,-20,-40,  # rank 7
-    -50,-40,-30,-30,-30,-30,-40,-50,  # rank 8
-]
+_MG_PSTS = [MG_PAWN_PST, MG_KNIGHT_PST, MG_BISHOP_PST, MG_ROOK_PST, MG_QUEEN_PST, MG_KING_PST]
+_EG_PSTS = [EG_PAWN_PST, EG_KNIGHT_PST, EG_BISHOP_PST, EG_ROOK_PST, EG_QUEEN_PST, EG_KING_PST]
 
-BISHOP_PST = [
-    -20,-10,-10,-10,-10,-10,-10,-20,  # rank 1
-    -10,  5,  0,  0,  0,  0,  5,-10,  # rank 2
-    -10, 10, 10, 10, 10, 10, 10,-10,  # rank 3
-    -10,  0, 10, 10, 10, 10,  0,-10,  # rank 4
-    -10,  5,  5, 10, 10,  5,  5,-10,  # rank 5
-    -10,  0,  5, 10, 10,  5,  0,-10,  # rank 6
-    -10,  0,  0,  0,  0,  0,  0,-10,  # rank 7
-    -20,-10,-10,-10,-10,-10,-10,-20,  # rank 8
-]
-
-ROOK_PST = [
-     0,  0,  0,  5,  5,  0,  0,  0,  # rank 1
-    -5,  0,  0,  0,  0,  0,  0, -5,  # rank 2
-    -5,  0,  0,  0,  0,  0,  0, -5,  # rank 3
-    -5,  0,  0,  0,  0,  0,  0, -5,  # rank 4
-    -5,  0,  0,  0,  0,  0,  0, -5,  # rank 5
-    -5,  0,  0,  0,  0,  0,  0, -5,  # rank 6
-     5, 10, 10, 10, 10, 10, 10,  5,  # rank 7
-     0,  0,  0,  0,  0,  0,  0,  0,  # rank 8
-]
-
-QUEEN_PST = [
-    -20,-10,-10, -5, -5,-10,-10,-20,  # rank 1
-    -10,  0,  5,  0,  0,  0,  0,-10,  # rank 2
-    -10,  5,  5,  5,  5,  5,  0,-10,  # rank 3
-      0,  0,  5,  5,  5,  5,  0, -5,  # rank 4
-     -5,  0,  5,  5,  5,  5,  0, -5,  # rank 5
-    -10,  0,  5,  5,  5,  5,  0,-10,  # rank 6
-    -10,  0,  0,  0,  0,  0,  0,-10,  # rank 7
-    -20,-10,-10, -5, -5,-10,-10,-20,  # rank 8
-]
-
-KING_PST = [
-     20, 30, 10,  0,  0, 10, 30, 20,  # rank 1
-     20, 20,  0,  0,  0,  0, 20, 20,  # rank 2
-    -10,-20,-20,-20,-20,-20,-20,-10,  # rank 3
-    -20,-30,-30,-40,-40,-30,-30,-20,  # rank 4
-    -30,-40,-40,-50,-50,-40,-40,-30,  # rank 5
-    -30,-40,-40,-50,-50,-40,-40,-30,  # rank 6
-    -30,-40,-40,-50,-50,-40,-40,-30,  # rank 7
-    -30,-40,-40,-50,-50,-40,-40,-30,  # rank 8
-]
-
-PST_TABLES = [PAWN_PST, KNIGHT_PST, BISHOP_PST, ROOK_PST, QUEEN_PST, KING_PST]
-
-# Precomputed per-square values (material + PST) indexed by sq_int (0-63).
-# Eliminates per-node dict and addition overhead inside the hot eval loop.
-_W_TABLES: list[list[int]] = []  # White: W_TABLES[piece_idx][sq_int]
-_B_TABLES: list[list[int]] = []  # Black: B_TABLES[piece_idx][sq_int]
-for _i, _pt in enumerate(PIECE_TYPES):
-    _mv = MATERIAL_VALUES[_pt]
-    _pst = PST_TABLES[_i]
-    _W_TABLES.append([_mv + _pst[sq] for sq in range(64)])
-    _B_TABLES.append([_mv + _pst[MIRROR[sq]] for sq in range(64)])
+# Precomputed per-square (material + PST) tables for hot eval loop.
+# [piece_idx][sq_int]
+_W_MG: list[list[int]] = []
+_W_EG: list[list[int]] = []
+_B_MG: list[list[int]] = []
+_B_EG: list[list[int]] = []
+for _i in range(6):
+    _mgv, _egv = MG_VALUES[_i], EG_VALUES[_i]
+    _mg_pst, _eg_pst = _MG_PSTS[_i], _EG_PSTS[_i]
+    _W_MG.append([_mgv + _mg_pst[sq] for sq in range(64)])
+    _W_EG.append([_egv + _eg_pst[sq] for sq in range(64)])
+    _B_MG.append([_mgv + _mg_pst[MIRROR[sq]] for sq in range(64)])
+    _B_EG.append([_egv + _eg_pst[MIRROR[sq]] for sq in range(64)])
 
 TRANSPOSITION_TABLE = {}
 killer_moves = [[None, None] for _ in range(MAX_PLY)]
@@ -169,92 +235,87 @@ def get_piece_value(board, square):
     piece = board[square]
     if piece is None:
         return 0
-    return MATERIAL_VALUES.get(piece.piece_type, 0)
+    return _MV_ORDER.get(piece.piece_type, 0)
 
 
 # ---------------------------------------------------------------------------
-# Evaluation
+# Evaluation helpers
 # ---------------------------------------------------------------------------
 
-def evaluate_board_fast(board, legal_moves_count):
-    """Material + PST + bishop pair + mobility. Used in quiescence search."""
-    score = 0
+def _compute_phase(board) -> int:
+    """Game phase: 24 = full middlegame, 0 = pure endgame."""
+    phase = 0
+    for i, pt in enumerate(PIECE_TYPES):
+        w = _PHASE_WEIGHTS[i]
+        if w:
+            phase += w * (len(board[WHITE, pt]) + len(board[BLACK, pt]))
+    return min(24, phase)
+
+
+def pawn_structure(board, color, phase: int) -> int:
+    """Tapered pawn structure score: doubled/isolated penalties + rank-scaled passed bonuses."""
     sq_map = SQ_TO_INT
-    wt = _W_TABLES
-    bt = _B_TABLES
-    for i, piece_type in enumerate(PIECE_TYPES):
-        w = wt[i]
-        b = bt[i]
-        for sq in board[WHITE, piece_type]:
-            score += w[sq_map[sq]]
-        for sq in board[BLACK, piece_type]:
-            score -= b[sq_map[sq]]
+    opp = BLACK if color == WHITE else WHITE
 
-    if len(board[WHITE, PIECE_TYPES[2]]) >= 2:
-        score += 30
-    if len(board[BLACK, PIECE_TYPES[2]]) >= 2:
-        score -= 30
-
-    if board.turn == WHITE:
-        score += legal_moves_count * 5
-    else:
-        score -= legal_moves_count * 5
-
-    return score if board.turn == WHITE else -score
-
-
-def pawn_structure(board, color):
-    """Doubled, isolated, passed pawn evaluation. Single-pass per color."""
-    pawn_sqs = [(SQ_TO_INT[sq] // 8, SQ_TO_INT[sq] % 8) for sq in board[color, PIECE_TYPES[0]]]
+    pawn_sqs = [(sq_map[sq] // 8, sq_map[sq] % 8) for sq in board[color, PIECE_TYPES[0]]]
     if not pawn_sqs:
         return 0
-
-    opp = BLACK if color == WHITE else WHITE
-    opp_sqs = [(SQ_TO_INT[sq] // 8, SQ_TO_INT[sq] % 8) for sq in board[opp, PIECE_TYPES[0]]]
-    all_sqs = pawn_sqs + opp_sqs
+    opp_sqs  = [(sq_map[sq] // 8, sq_map[sq] % 8) for sq in board[opp,   PIECE_TYPES[0]]]
 
     my_files = [f for _, f in pawn_sqs]
     file_set = set(my_files)
-
     file_counts: dict[int, int] = {}
     for f in my_files:
         file_counts[f] = file_counts.get(f, 0) + 1
 
-    doubled = sum(c - 1 for c in file_counts.values() if c > 1)
+    doubled  = sum(c - 1 for c in file_counts.values() if c > 1)
     isolated = sum(1 for _, f in pawn_sqs if (f - 1) not in file_set and (f + 1) not in file_set)
 
-    passed = 0
+    mg = -12 * doubled - 15 * isolated
+    eg = -20 * doubled - 25 * isolated
+
+    # Passed pawns: only opponent pawns can block passage, rank-scaled bonuses
+    PASSED_MG = (0,  5, 10, 20,  35,  55,  80, 0)
+    PASSED_EG = (0, 15, 25, 50,  80, 125, 175, 0)
     is_white = color == WHITE
     for rank, file in pawn_sqs:
         is_passed = True
-        for other_rank, other_file in all_sqs:
-            d = other_file - file
+        for opp_rank, opp_file in opp_sqs:  # opponent pawns only
+            d = opp_file - file
             if -1 <= d <= 1:
-                if is_white and other_rank > rank:
+                if is_white and opp_rank > rank:
                     is_passed = False
                     break
-                if not is_white and other_rank < rank:
+                if not is_white and opp_rank < rank:
                     is_passed = False
                     break
         if is_passed:
-            passed += 1
+            eff = rank if is_white else 7 - rank
+            mg += PASSED_MG[eff]
+            eg += PASSED_EG[eff]
 
-    return 20 * passed - 12 * doubled - 15 * isolated
+    return (mg * phase + eg * (24 - phase)) // 24
 
 
-def king_safety(board, color):
+def king_safety(board, color, phase: int) -> int:
+    """Phase-weighted king safety penalty: pawn shield + open files + pawn storm."""
+    if phase == 0:
+        return 0
+    sq_map = SQ_TO_INT
     king_sqs = list(board[color, PIECE_TYPES[5]])
     if not king_sqs:
         return 0
-    king_idx = SQ_TO_INT[king_sqs[0]]
+    king_idx = sq_map[king_sqs[0]]
     kfile = king_idx % 8
     krank = king_idx // 8
 
     opp = BLACK if color == WHITE else WHITE
     friendly_pawns = set(board[color, PIECE_TYPES[0]])
-    opp_pawns = set(board[opp, PIECE_TYPES[0]])
+    opp_pawns      = list(board[opp,   PIECE_TYPES[0]])
 
     penalty = 0
+
+    # Pawn shield
     shield_rank = krank + 1 if color == WHITE else krank - 1
     if 0 <= shield_rank <= 7:
         for df in (-1, 0, 1):
@@ -262,47 +323,82 @@ def king_safety(board, color):
             if 0 <= f <= 7 and SQUARES[shield_rank * 8 + f] not in friendly_pawns:
                 penalty += 15
 
-    my_pawn_files = {SQ_TO_INT[sq] % 8 for sq in friendly_pawns}
-    opp_pawn_files = {SQ_TO_INT[sq] % 8 for sq in opp_pawns}
+    # Open / semi-open files near king
+    my_pawn_files  = {sq_map[sq] % 8 for sq in friendly_pawns}
+    opp_pawn_files = {sq_map[sq] % 8 for sq in opp_pawns}
     for df in (-1, 0, 1):
         f = kfile + df
         if 0 <= f <= 7 and f not in my_pawn_files:
             penalty += 20 if f not in opp_pawn_files else 10
 
-    return penalty
+    # Pawn storm: opponent pawns advancing toward king
+    for opp_sq in opp_pawns:
+        idx = sq_map[opp_sq]
+        f = idx % 8
+        r = idx // 8
+        if abs(f - kfile) > 1:
+            continue
+        dist = r - krank if color == WHITE else krank - r
+        if 1 <= dist <= 3:
+            penalty += (4 - dist) * 8  # dist 1→24, dist 2→16, dist 3→8
+
+    return penalty * phase // 24
 
 
-def evaluate_board_full(board, legal_moves_count):
-    """Full positional evaluation (pawn structure + king safety).
-    Not called in the main search path — reserved for futility pruning
-    or analysis once that feature is implemented."""
-    score = 0
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+
+def evaluate_board_fast(board, legal_moves_count):
+    """PESTO tapered material + PST + bishop pair + mobility (used in quiescence)."""
     sq_map = SQ_TO_INT
-    wt = _W_TABLES
-    bt = _B_TABLES
-    for i, piece_type in enumerate(PIECE_TYPES):
-        w = wt[i]
-        b = bt[i]
-        for sq in board[WHITE, piece_type]:
-            score += w[sq_map[sq]]
-        for sq in board[BLACK, piece_type]:
-            score -= b[sq_map[sq]]
+    phase = _compute_phase(board)
+    mg, eg = 0, 0
+    for i in range(6):
+        wm, we = _W_MG[i], _W_EG[i]
+        bm, be = _B_MG[i], _B_EG[i]
+        for sq in board[WHITE, PIECE_TYPES[i]]:
+            s = sq_map[sq]; mg += wm[s]; eg += we[s]
+        for sq in board[BLACK, PIECE_TYPES[i]]:
+            s = sq_map[sq]; mg -= bm[s]; eg -= be[s]
+
+    score = (mg * phase + eg * (24 - phase)) // 24
 
     if len(board[WHITE, PIECE_TYPES[2]]) >= 2:
         score += 30
     if len(board[BLACK, PIECE_TYPES[2]]) >= 2:
         score -= 30
 
-    score += pawn_structure(board, WHITE)
-    score -= pawn_structure(board, BLACK)
-    score -= king_safety(board, WHITE)
-    score += king_safety(board, BLACK)
+    score += legal_moves_count * 5 if board.turn == WHITE else -legal_moves_count * 5
+    return score if board.turn == WHITE else -score
 
-    if board.turn == WHITE:
-        score += legal_moves_count * 5
-    else:
-        score -= legal_moves_count * 5
 
+def evaluate_board_full(board, legal_moves_count):
+    """Full PESTO evaluation: tapered material/PST + pawn structure + king safety."""
+    sq_map = SQ_TO_INT
+    phase = _compute_phase(board)
+    mg, eg = 0, 0
+    for i in range(6):
+        wm, we = _W_MG[i], _W_EG[i]
+        bm, be = _B_MG[i], _B_EG[i]
+        for sq in board[WHITE, PIECE_TYPES[i]]:
+            s = sq_map[sq]; mg += wm[s]; eg += we[s]
+        for sq in board[BLACK, PIECE_TYPES[i]]:
+            s = sq_map[sq]; mg -= bm[s]; eg -= be[s]
+
+    score = (mg * phase + eg * (24 - phase)) // 24
+
+    if len(board[WHITE, PIECE_TYPES[2]]) >= 2:
+        score += 30
+    if len(board[BLACK, PIECE_TYPES[2]]) >= 2:
+        score -= 30
+
+    score += pawn_structure(board, WHITE, phase)
+    score -= pawn_structure(board, BLACK, phase)
+    score -= king_safety(board, WHITE, phase)
+    score += king_safety(board, BLACK, phase)
+
+    score += legal_moves_count * 5 if board.turn == WHITE else -legal_moves_count * 5
     return score if board.turn == WHITE else -score
 
 
@@ -395,7 +491,7 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, 
         return tt_value
 
     if depth <= 0:
-        stand_pat = evaluate_board_fast(board, len(legal_moves))
+        stand_pat = evaluate_board_full(board, len(legal_moves))
         return quiesce(board, alpha, beta, ply_from_root, legal_moves, stand_pat)
 
     in_check = board in CHECK

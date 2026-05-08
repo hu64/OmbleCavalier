@@ -25,35 +25,19 @@ int pstValue(Piece piece, Square sq)
     if (piece == Piece::NONE)
         return 0;
     int idx = sq.index();
-    // chess.hpp uses a1=0; PST uses a8=0. White needs mirror(); Black uses sq directly.
     if (piece.color() == Color::WHITE)
         idx = mirror(idx);
-    switch (piece.type())
-    {
-    case (int)PieceType::PAWN:
-        return PAWN_PST[idx];
-    case (int)PieceType::KNIGHT:
-        return KNIGHT_PST[idx];
-    case (int)PieceType::BISHOP:
-        return BISHOP_PST[idx];
-    case (int)PieceType::ROOK:
-        return ROOK_PST[idx];
-    case (int)PieceType::QUEEN:
-        return QUEEN_PST[idx];
-    case (int)PieceType::KING:
-        return KING_PST[idx];
-    default:
-        return 0;
-    }
+    int pt = (int)piece.type();
+    return MG_VALUES[pt] + MG_PST[pt][idx];
 }
 
-// Returns material value of a piece on a square
+// Returns MG material value of a piece (used for MVV-LVA move ordering)
 int getPieceValue(const Board &board, Square sq)
 {
     Piece piece = board.at(sq);
     if (piece == Piece::NONE)
         return 0;
-    return MATERIAL_VALUES[(int)piece.type()];
+    return MG_VALUES[(int)piece.type()];
 }
 
 // MVV-LVA scoring for captures
