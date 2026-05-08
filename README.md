@@ -223,16 +223,12 @@ Ranked by estimated Elo gain per implementation effort. _Both engines_ unless no
 
 ### Open
 
-1. **Python — Repetition detection incomplete**
-   - `board in DRAW` from bulletchess may not catch all repetitions mid-search.
-   - **Fix**: Track board hashes in a stack and detect three-fold repetition explicitly.
-
-2. **Python — Null move via FEN is slow**
-   - Null move is implemented by flipping the turn in the FEN string and creating a new `Board`. Functionally correct but slower than a native make/unmake null move.
-   - **Fix**: Investigate bulletchess internals or implement a workaround.
+_None._
 
 ### Fixed
 
+- ~~**Python — Repetition detection incomplete**~~ Fixed: `board.__hash__()` in bulletchess includes the halfmove clock, so identical positions at different move counts had different hashes and `board in DRAW` missed mid-search repetitions. Added `position_key()` (normalises halfmove/fullmove before hashing) and a `rep_counts` dict threaded through the search. Root is counted twice — once from game history, once as the active search anchor — so any branch cycling back scores as a draw.
+- ~~**Python — Null move via FEN is slow**~~ Fixed: replaced FEN-string manipulation + `Board.from_fen()` with `board.copy()` followed by direct attribute mutation (`board.turn`, `board.en_passant_square`). ~5× faster per null-move attempt.
 - ~~**C++ — PST indexing inverted**~~ Fixed: White pieces now use `mirror(sq)` and Black pieces use `sq` directly to correctly map chess.hpp's a1=0 convention to the PST's a8=0 convention. A White pawn near promotion was previously getting a *penalty* instead of a +50 bonus; a castled king at g1 was scored -40 instead of +30.
 - ~~**C++ — `position fen` command not handled**~~ Fixed.
 - ~~**C++ — Hash move not used for move ordering**~~ Fixed: TT lookup now always extracts the best move and passes it to move ordering, even when depth is insufficient for a score cutoff.

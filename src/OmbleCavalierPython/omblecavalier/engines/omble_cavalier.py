@@ -120,6 +120,15 @@ for _i, _pt in enumerate(PIECE_TYPES):
 TRANSPOSITION_TABLE = {}
 killer_moves = [[None, None] for _ in range(MAX_PLY)]
 history_heuristic = [[0] * 64 for _ in range(64)]
+game_position_keys: list[int] = []
+
+
+def position_key(board: Board) -> int:
+    """Position hash excluding halfmove clock and fullmove number, for repetition detection."""
+    c = board.copy()
+    c.halfmove_clock = 0
+    c.fullmove_number = 1
+    return c.__hash__()
 
 
 def reset_search_state():
@@ -364,7 +373,7 @@ def quiesce(board, alpha, beta, ply_from_root, legal_moves=None, stand_pat=None)
     return best
 
 
-def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
+def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, rep_counts=None):
     if time.time() - start_time > time_limit:
         return None
 
@@ -373,6 +382,12 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
     if not legal_moves:
         return -(MATE_SCORE - ply_from_root) if board in CHECK else 0
     if board.halfmove_clock >= 100 or board in DRAW:
+        return 0
+
+    # Repetition detection: position_key excludes halfmove/fullmove so positions
+    # that repeat at different move counts are correctly identified as draws.
+    current_key = position_key(board)
+    if rep_counts is not None and rep_counts.get(current_key, 0) >= 1:
         return 0
 
     tt_value = tt_lookup(board, depth, alpha, beta)
@@ -385,7 +400,7 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
 
     in_check = board in CHECK
 
-    # Null move pruning
+    # Null move pruning (copy + attribute mutation avoids slow FEN roundtrip)
     if depth >= 3 and not in_check:
         non_pawn_material = (
             len(board[board.turn, PIECE_TYPES[1]]) * 320
@@ -394,11 +409,10 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
             + len(board[board.turn, PIECE_TYPES[4]]) * 900
         )
         if non_pawn_material >= 1000:
-            fen_parts = board.fen().split()
-            fen_parts[1] = "b" if fen_parts[1] == "w" else "w"
-            fen_parts[3] = "-"
-            null_board = Board.from_fen(" ".join(fen_parts))
-            null_score = negamax(null_board, depth - 3, -beta, -beta + 1, start_time, time_limit, ply_from_root + 1)
+            null_board = board.copy()
+            null_board.turn = BLACK if board.turn == WHITE else WHITE
+            null_board.en_passant_square = None
+            null_score = negamax(null_board, depth - 3, -beta, -beta + 1, start_time, time_limit, ply_from_root + 1, rep_counts)
             if null_score is not None and -null_score >= beta:
                 return beta
 
@@ -406,57 +420,66 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
     best_score = float("-inf")
     move_idx = 0
 
-    for move in order_moves(board, legal_moves, ply_from_root):
-        is_capture = move.is_capture(board)
-        is_killer = ply_from_root < MAX_PLY and (
-            move == killer_moves[ply_from_root][0] or move == killer_moves[ply_from_root][1]
-        )
+    if rep_counts is not None:
+        rep_counts[current_key] = rep_counts.get(current_key, 0) + 1
 
-        board.apply(move)
-        gives_check = board in CHECK
+    try:
+        for move in order_moves(board, legal_moves, ply_from_root):
+            is_capture = move.is_capture(board)
+            is_killer = ply_from_root < MAX_PLY and (
+                move == killer_moves[ply_from_root][0] or move == killer_moves[ply_from_root][1]
+            )
 
-        # Late Move Reduction: quiet, non-killer, non-check moves after the first few
-        if not in_check and depth >= 3 and move_idx >= 2 and not is_capture and not is_killer and not gives_check:
-            reduction = 1 + (1 if move_idx >= 6 else 0)
-            score = negamax(board, depth - 1 - reduction, -alpha - 1, -alpha, start_time, time_limit, ply_from_root + 1)
-            if score is not None:
-                score = -score
-                if score > alpha:
-                    # Fail-high on reduced search: re-search at full depth
-                    score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1)
-                    if score is not None:
-                        score = -score
-        else:
-            score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1)
-            if score is not None:
-                score = -score
+            board.apply(move)
+            gives_check = board in CHECK
 
-        board.undo()
-        move_idx += 1
+            # Late Move Reduction: quiet, non-killer, non-check moves after the first few
+            if not in_check and depth >= 3 and move_idx >= 2 and not is_capture and not is_killer and not gives_check:
+                reduction = 1 + (1 if move_idx >= 6 else 0)
+                score = negamax(board, depth - 1 - reduction, -alpha - 1, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
+                if score is not None:
+                    score = -score
+                    if score > alpha:
+                        # Fail-high on reduced search: re-search at full depth
+                        score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
+                        if score is not None:
+                            score = -score
+            else:
+                score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
+                if score is not None:
+                    score = -score
 
-        if score is None:
-            return None
+            board.undo()
+            move_idx += 1
 
-        if score > best_score:
-            best_score = score
-        if score > alpha:
-            alpha = score
-        if alpha >= beta:
-            if not is_capture:
-                from_idx = SQ_TO_INT[move.origin]
-                to_idx = SQ_TO_INT[move.destination]
-                if ply_from_root < MAX_PLY:
-                    if killer_moves[ply_from_root][0] != move:
-                        killer_moves[ply_from_root][1] = killer_moves[ply_from_root][0]
-                        killer_moves[ply_from_root][0] = move
-                history_heuristic[from_idx][to_idx] += depth * depth
-            break
+            if score is None:
+                return None
 
-    tt_store(board, depth, best_score, original_alpha, beta)
-    return best_score
+            if score > best_score:
+                best_score = score
+            if score > alpha:
+                alpha = score
+            if alpha >= beta:
+                if not is_capture:
+                    from_idx = SQ_TO_INT[move.origin]
+                    to_idx = SQ_TO_INT[move.destination]
+                    if ply_from_root < MAX_PLY:
+                        if killer_moves[ply_from_root][0] != move:
+                            killer_moves[ply_from_root][1] = killer_moves[ply_from_root][0]
+                            killer_moves[ply_from_root][0] = move
+                    history_heuristic[from_idx][to_idx] += depth * depth
+                break
+
+        tt_store(board, depth, best_score, original_alpha, beta)
+        return best_score
+    finally:
+        if rep_counts is not None:
+            rep_counts[current_key] -= 1
+            if rep_counts[current_key] == 0:
+                del rep_counts[current_key]
 
 
-def find_best_move(board, depth, start_time, time_limit, legal_moves, alpha, beta):
+def find_best_move(board, depth, start_time, time_limit, legal_moves, alpha, beta, rep_counts=None):
     best_move = None
     best_score = float("-inf")
     timed_out = False
@@ -466,7 +489,7 @@ def find_best_move(board, depth, start_time, time_limit, legal_moves, alpha, bet
             timed_out = True
             break
         board.apply(move)
-        score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root=1)
+        score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root=1, rep_counts=rep_counts)
         board.undo()
         if score is None:
             timed_out = True
@@ -511,6 +534,16 @@ def find_best_move_iterative(board, max_depth, total_time_remaining, increment=0
         print("info string No legal moves available")
         return None
 
+    # Build repetition counter from game history (includes root position).
+    # Root is counted twice: once from game history, once for the active search,
+    # so any branch cycling back to root is correctly detected as a 2-fold draw.
+    rep_counts: dict[int, int] = {}
+    for key in game_position_keys:
+        rep_counts[key] = rep_counts.get(key, 0) + 1
+    if game_position_keys:
+        root_key = game_position_keys[-1]
+        rep_counts[root_key] = rep_counts.get(root_key, 0) + 1
+
     best_move = legal_moves[0]
     prev_score = 0
 
@@ -529,7 +562,7 @@ def find_best_move_iterative(board, max_depth, total_time_remaining, increment=0
 
         while True:
             move, score, timed_out = find_best_move(
-                board, depth, start_time, time_for_move, legal_moves, alpha, beta
+                board, depth, start_time, time_for_move, legal_moves, alpha, beta, rep_counts
             )
 
             if timed_out:
@@ -607,18 +640,26 @@ def main():
                     board = Board.from_fen(
                         "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
                     )
+                    game_position_keys.clear()
+                    game_position_keys.append(position_key(board))
                     if "moves" in tokens:
                         for move_str in tokens[tokens.index("moves") + 1 :]:
                             board.apply(Move.from_uci(move_str))
+                            game_position_keys.append(position_key(board))
                 elif "fen" in tokens:
                     fen_idx = tokens.index("fen") + 1
                     if "moves" in tokens:
                         moves_idx = tokens.index("moves")
                         board = Board.from_fen(" ".join(tokens[fen_idx:moves_idx]))
+                        game_position_keys.clear()
+                        game_position_keys.append(position_key(board))
                         for move_str in tokens[moves_idx + 1 :]:
                             board.apply(Move.from_uci(move_str))
+                            game_position_keys.append(position_key(board))
                     else:
                         board = Board.from_fen(" ".join(tokens[fen_idx:]))
+                        game_position_keys.clear()
+                        game_position_keys.append(position_key(board))
 
             elif line.startswith("go"):
                 tokens = line.split()
