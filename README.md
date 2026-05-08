@@ -2,6 +2,9 @@
 
 Two UCI-compatible chess engines — one in C++, one in Python — built to run as bots on [Lichess](https://lichess.org) via [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot).
 
+> **Challenge them on Lichess:**
+> [OmbleCavalier (Python)](https://lichess.org/@/OmbleCavalier) · [OmbleCavalierPP (C++)](https://lichess.org/@/OmbleCavalierPP)
+
 ---
 
 ## ♞ OmbleCavalier++ (C++)
