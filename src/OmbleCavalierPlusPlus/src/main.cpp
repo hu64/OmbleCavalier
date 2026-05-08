@@ -175,9 +175,10 @@ int main(int argc, char *argv[])
         {
             break;
         }
-        else if (line == "puzzletest")
+        else if (line.rfind("puzzletest", 0) == 0)
         {
-            runPuzzleTests();
+            std::string path = (line.size() > 11) ? line.substr(11) : PUZZLES_JSON_PATH;
+            runPuzzleTests(path);
             std::cout << "info string Puzzle tests complete\n";
         }
         else if (line == "benchmarking")

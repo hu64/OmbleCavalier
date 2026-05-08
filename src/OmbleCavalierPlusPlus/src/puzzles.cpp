@@ -1,23 +1,67 @@
 #include "puzzles.hpp"
 #include "search.hpp"
 #include "tt.hpp"
+#include <fstream>
 using namespace chess;
 
-
-void runPuzzleTests()
+static std::string jsonStr(const std::string &obj, const std::string &key)
 {
-    std::vector<Puzzle> puzzles = {
-        {"kbK5/pp6/1P6/8/8/8/R7/8 w - - 0 2", "mate in 2 (a2a6)", "a2a6", 4},
-        {"rnbqkbnr/ppp2ppp/3p4/4p3/4P1Q1/8/PPPP1PPP/RNB1KBNR b KQkq - 1 3", "black wins a queen (c8g4)", "c8g4", 6},
-        {"rnbqkbnr/1pp2ppp/p2p4/4p1B1/4P3/3P4/PPP2PPP/RN1QKBNR w KQkq - 0 4", "white wins a queen (g5d8)", "g5d8", 6},
-        {"r1b1kb1r/pppp1ppp/5q2/4n3/3KP3/2N3PN/PPP4P/R1BQ1B1R b kq - 0 1", "", "f8c5", 6},
-        {"1r5k/5ppp/3Q4/8/8/Prq3P1/2P1K2P/3R1R2 b - - 5 27", "", "c3e3", 6},
-        {"8/1Q6/2PBK3/k7/8/2P2P2/8/7q w - - 7 63", "mate in 2", "d6c7", 4},
-        {"r3k2r/ppp2Npp/1b5n/4p2b/2B1P2q/BQP2P2/P5PP/RN5K w kq - 1 0", "mate in 3", "c4b5", 6},
-        {"r2n1rk1/1ppb2pp/1p1p4/3Ppq1n/2B3P1/2P4P/PP1N1P1K/R2Q1RN1 b - - 0 1", "mate in 3", "f5f2", 6},
-        {"8/8/8/3k4/1Q1Np2p/1p2P2P/1Pp2b2/2K5 w - - 1 50", "mate in 6", "b4a5", 12},
+    auto kpos = obj.find("\"" + key + "\"");
+    if (kpos == std::string::npos) return "";
+    auto colon = obj.find(':', kpos);
+    auto q1 = obj.find('"', colon + 1);
+    if (q1 == std::string::npos) return "";
+    auto q2 = obj.find('"', q1 + 1);
+    if (q2 == std::string::npos) return "";
+    return obj.substr(q1 + 1, q2 - q1 - 1);
+}
 
-    };
+static int jsonInt(const std::string &obj, const std::string &key)
+{
+    auto kpos = obj.find("\"" + key + "\"");
+    if (kpos == std::string::npos) return 0;
+    auto colon = obj.find(':', kpos);
+    size_t i = colon + 1;
+    while (i < obj.size() && !std::isdigit((unsigned char)obj[i])) ++i;
+    size_t j = i;
+    while (j < obj.size() && std::isdigit((unsigned char)obj[j])) ++j;
+    if (i == j) return 0;
+    return std::stoi(obj.substr(i, j - i));
+}
+
+static std::vector<Puzzle> loadPuzzles(const std::string &path)
+{
+    std::ifstream file(path);
+    if (!file.is_open())
+    {
+        std::cerr << "Could not open puzzles file: " << path << std::endl;
+        return {};
+    }
+    std::string content((std::istreambuf_iterator<char>(file)), {});
+
+    std::vector<Puzzle> puzzles;
+    size_t pos = 0;
+    while ((pos = content.find('{', pos)) != std::string::npos)
+    {
+        size_t end = content.find('}', pos);
+        if (end == std::string::npos) break;
+        std::string obj = content.substr(pos, end - pos + 1);
+        std::string fen = jsonStr(obj, "fen");
+        if (!fen.empty())
+            puzzles.push_back({fen, jsonStr(obj, "description"), jsonStr(obj, "best_move"), jsonInt(obj, "depth")});
+        pos = end + 1;
+    }
+    return puzzles;
+}
+
+void runPuzzleTests(const std::string &puzzlesPath)
+{
+    auto puzzles = loadPuzzles(puzzlesPath);
+    if (puzzles.empty())
+    {
+        std::cout << "No puzzles loaded from: " << puzzlesPath << std::endl;
+        return;
+    }
 
     int passCount = 0;
     int total = (int)puzzles.size();
@@ -48,9 +92,7 @@ void runPuzzleTests()
         }
         std::cout << "FEN: " << puzzle.fen;
         if (!puzzle.description.empty())
-        {
             std::cout << " (" << puzzle.description << ")";
-        }
         std::cout << " - Expected: " << puzzle.expected_best_move << ", Got: " << bestMoveUci;
         std::cout << " | Time: " << elapsed << "s" << std::endl;
         ttClear();
@@ -69,20 +111,15 @@ bool runSingleTest(const std::string &fen, const std::string &expectedMove, int 
     board.setFen(fen);
     ttClear();
 
-    // Allocate plenty of time for the test
     Move bestMove = findBestMoveIterative(board, depth, 60.0);
     std::string bestMoveUci = uci::moveToUci(bestMove);
 
     bool passed = (bestMoveUci == expectedMove);
 
     if (passed)
-    {
         std::cout << "[PASS] Found best move: " << bestMoveUci << std::endl;
-    }
     else
-    {
         std::cout << "[FAIL] Expected: " << expectedMove << ", Got: " << bestMoveUci << std::endl;
-    }
 
     return passed;
 }

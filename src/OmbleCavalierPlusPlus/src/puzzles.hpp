@@ -9,5 +9,5 @@ struct Puzzle
     int requiredDepth;
 };
 
-void runPuzzleTests();
+void runPuzzleTests(const std::string &puzzlesPath);
 bool runSingleTest(const std::string &fen, const std::string &expectedMove, int depth);

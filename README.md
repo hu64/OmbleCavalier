@@ -60,6 +60,8 @@ The binary is output to `build/omble_cavalier++`.
 
 ### Test
 
+Puzzle positions are defined in [`tests/puzzles.json`](tests/puzzles.json) and shared by both engines. Add or edit puzzles there.
+
 ```bash
 cd src/OmbleCavalierPlusPlus/build
 
@@ -145,6 +147,8 @@ go wtime 60000 btime 60000
 
 ### Test
 
+Puzzle positions are shared with the C++ engine via [`tests/puzzles.json`](tests/puzzles.json).
+
 ```bash
 # From repo root
 uv run pytest src/OmbleCavalierPython/tests/ -v
@@ -154,7 +158,7 @@ uv run pytest src/OmbleCavalierPython/tests/ -v
 
 ```bash
 uv run pyinstaller --onefile \
-  --distpath src/OmbleCavalierPlusPlus/engines \
+  --distpath engines \
   src/OmbleCavalierPython/omblecavalier/engines/omble_cavalier.py
 ```
 
