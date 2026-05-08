@@ -19,3 +19,4 @@ int negamax(chess::Board &board, int depth, int alpha, int beta,
 int quiesce(chess::Board &board, int alpha, int beta, int plyFromRoot);
 
 chess::Move findBestMoveIterative(chess::Board &board, int maxDepth, double totalTimeRemaining, double increment = 0.0);
+void resetSearchState();

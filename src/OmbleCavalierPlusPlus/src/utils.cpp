@@ -25,9 +25,9 @@ int pstValue(Piece piece, Square sq)
     if (piece == Piece::NONE)
         return 0;
     int idx = sq.index();
-    // Mirror for black
-    if (piece.color() == Color::BLACK)
-        idx = 56 + (7 - (idx % 8)) - 8 * (idx / 8);
+    // chess.hpp uses a1=0; PST uses a8=0. White needs mirror(); Black uses sq directly.
+    if (piece.color() == Color::WHITE)
+        idx = mirror(idx);
     switch (piece.type())
     {
     case (int)PieceType::PAWN:
@@ -94,18 +94,19 @@ std::vector<Move> orderMoves(
         {
             score = 800000;
         }
-        // 4. History heuristic (optional)
+        // 4. Checks
+        else if (board.givesCheck(move) != CheckType::NO_CHECK)
+        {
+            score = 700000;
+        }
+        // 5. History heuristic
         else if (historyHeuristic)
         {
             int from = move.from().index();
             int to = move.to().index();
             score = 1000 + historyHeuristic[from][to];
         }
-        else if (board.givesCheck(move) != CheckType::NO_CHECK)
-        {
-            score += 500;
-        }
-        // 5. Quiet moves
+        // 6. Quiet moves
         else
         {
             score = 0;
@@ -143,10 +144,10 @@ void orderMovesInPlace(
         else if ((!killerMoves.empty() && move == killerMoves[0]) ||
                  (killerMoves.size() > 1 && move == killerMoves[1]))
             score = 800000;
+        else if (board.givesCheck(move) != CheckType::NO_CHECK)
+            score = 700000;
         else if (historyHeuristic)
             score = 1000 + historyHeuristic[move.from().index()][move.to().index()];
-        else if (board.givesCheck(move) != CheckType::NO_CHECK)
-            score += 500;
         else
             score = 0;
         return score;

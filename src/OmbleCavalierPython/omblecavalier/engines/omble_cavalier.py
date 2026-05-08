@@ -380,12 +380,13 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
         return tt_value
 
     if depth <= 0:
-        # Pass legal_moves and stand_pat into quiesce to avoid recomputing them.
         stand_pat = evaluate_board_fast(board, len(legal_moves))
         return quiesce(board, alpha, beta, ply_from_root, legal_moves, stand_pat)
 
+    in_check = board in CHECK
+
     # Null move pruning
-    if depth >= 3 and board not in CHECK:
+    if depth >= 3 and not in_check:
         non_pawn_material = (
             len(board[board.turn, PIECE_TYPES[1]]) * 320
             + len(board[board.turn, PIECE_TYPES[2]]) * 330
@@ -403,22 +404,45 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0):
 
     original_alpha = alpha
     best_score = float("-inf")
+    move_idx = 0
 
     for move in order_moves(board, legal_moves, ply_from_root):
+        is_capture = move.is_capture(board)
+        is_killer = ply_from_root < MAX_PLY and (
+            move == killer_moves[ply_from_root][0] or move == killer_moves[ply_from_root][1]
+        )
+
         board.apply(move)
-        score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1)
+        gives_check = board in CHECK
+
+        # Late Move Reduction: quiet, non-killer, non-check moves after the first few
+        if not in_check and depth >= 3 and move_idx >= 2 and not is_capture and not is_killer and not gives_check:
+            reduction = 1 + (1 if move_idx >= 6 else 0)
+            score = negamax(board, depth - 1 - reduction, -alpha - 1, -alpha, start_time, time_limit, ply_from_root + 1)
+            if score is not None:
+                score = -score
+                if score > alpha:
+                    # Fail-high on reduced search: re-search at full depth
+                    score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1)
+                    if score is not None:
+                        score = -score
+        else:
+            score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1)
+            if score is not None:
+                score = -score
+
         board.undo()
+        move_idx += 1
 
         if score is None:
             return None
-        score = -score
 
         if score > best_score:
             best_score = score
         if score > alpha:
             alpha = score
         if alpha >= beta:
-            if not move.is_capture(board):
+            if not is_capture:
                 from_idx = SQ_TO_INT[move.origin]
                 to_idx = SQ_TO_INT[move.destination]
                 if ply_from_root < MAX_PLY:
@@ -562,7 +586,7 @@ def main():
             line = line.strip()
 
             if line == "uci":
-                print("id name OmbleCavalierNew")
+                print("id name OmbleCavalier")
                 print("id author Hughes Perreault")
                 print("uciok")
                 sys.stdout.flush()

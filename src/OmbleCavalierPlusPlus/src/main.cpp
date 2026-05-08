@@ -1,5 +1,5 @@
 #include "chess.hpp"
-
+#include <sstream>
 #include "puzzles.hpp"
 #include "tt.hpp"
 #include "book.hpp"
@@ -33,7 +33,7 @@ void benchmarking()
     std::cout << "Benchmarking complete: searched to depth 14 in " << elapsed << " seconds." << std::endl;
     findBestMoveIterative(board, 14, 1000.0);
 
-    TT.clear();
+    ttClear();
 }
 
 int main(int argc, char *argv[])
@@ -73,7 +73,8 @@ int main(int argc, char *argv[])
         else if (line == "ucinewgame")
         {
             board.setFen(chess::constants::STARTPOS);
-            TT.clear();
+            ttClear();
+            resetSearchState();
         }
         else if (line.rfind("position", 0) == 0)
         {
@@ -84,6 +85,23 @@ int main(int argc, char *argv[])
                 if (movesPos != std::string::npos)
                 {
                     std::istringstream ss(line.substr(movesPos + 6));
+                    std::string moveStr;
+                    while (ss >> moveStr)
+                    {
+                        Move m = uci::uciToMove(board, moveStr);
+                        board.makeMove(m);
+                    }
+                }
+            }
+            else if (line.find("fen") != std::string::npos)
+            {
+                auto fenPos = line.find("fen") + 4;
+                auto movesPos = line.find(" moves ");
+                std::string fen = line.substr(fenPos, movesPos == std::string::npos ? std::string::npos : movesPos - fenPos);
+                board.setFen(fen);
+                if (movesPos != std::string::npos)
+                {
+                    std::istringstream ss(line.substr(movesPos + 7));
                     std::string moveStr;
                     while (ss >> moveStr)
                     {

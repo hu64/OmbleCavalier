@@ -53,7 +53,7 @@ void runPuzzleTests()
         }
         std::cout << " - Expected: " << puzzle.expected_best_move << ", Got: " << bestMoveUci;
         std::cout << " | Time: " << elapsed << "s" << std::endl;
-        TT.clear();
+        ttClear();
     }
 
     auto overall_end = std::chrono::steady_clock::now();
@@ -67,7 +67,7 @@ bool runSingleTest(const std::string &fen, const std::string &expectedMove, int 
 {
     Board board;
     board.setFen(fen);
-    TT.clear();
+    ttClear();
 
     // Allocate plenty of time for the test
     Move bestMove = findBestMoveIterative(board, depth, 60.0);

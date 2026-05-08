@@ -5,15 +5,23 @@
 #include <climits>
 using namespace chess;
 
-constexpr int MAX_PLY = 128; // or whatever your max search depth is
+constexpr int MAX_PLY = 128;
 
-// Two killer moves per ply
 static Move killerMoves[MAX_PLY][2];
-
-// History heuristic table: [from][to]
 static int historyHeuristic[64][64];
 
-// Quiescence search with draw/mate/stalemate detection
+void resetSearchState()
+{
+    for (int i = 0; i < MAX_PLY; ++i)
+    {
+        killerMoves[i][0] = Move::NULL_MOVE;
+        killerMoves[i][1] = Move::NULL_MOVE;
+    }
+    for (int i = 0; i < 64; ++i)
+        for (int j = 0; j < 64; ++j)
+            historyHeuristic[i][j] = 0;
+}
+
 int quiesce(Board &board, int alpha, int beta, int plyFromRoot)
 {
     chess::Movelist legalMoves;
@@ -46,7 +54,6 @@ int quiesce(Board &board, int alpha, int beta, int plyFromRoot)
     return stand_pat;
 }
 
-// Negamax search (returns only score, not move)
 int negamax(Board &board, int depth, int alpha, int beta,
             std::chrono::steady_clock::time_point start, double timeLimit, int plyFromRoot, bool &timedOut)
 {
@@ -62,31 +69,27 @@ int negamax(Board &board, int depth, int alpha, int beta,
     chess::Movelist legalMoves;
     movegen::legalmoves(legalMoves, board);
 
-    auto ttVal = ttLookup(board, depth, alpha, beta, plyFromRoot);
+    Move hashMove = Move::NULL_MOVE;
+    auto ttVal = ttLookup(board, depth, alpha, beta, plyFromRoot, hashMove);
     if (ttVal.has_value())
-        return ttVal.value().first;
+        return ttVal.value();
 
-    // Terminal detection
     if (board.isRepetition(1) || board.isInsufficientMaterial())
         return 0;
     if (board.isHalfMoveDraw())
         return 0;
     if (legalMoves.empty())
-    {
-        if (board.sideToMove() == Color::WHITE)
-            return board.inCheck() ? -MATE_SCORE + plyFromRoot : 0;
-        else
-            return board.inCheck() ? -MATE_SCORE + plyFromRoot : 0;
-    }
+        return board.inCheck() ? -MATE_SCORE + plyFromRoot : 0;
 
-    // null move pruningp
+    if (depth <= 0)
+        return quiesce(board, alpha, beta, plyFromRoot + 1);
+
+    // Null move pruning
     if (depth >= 3 && !board.inCheck())
     {
         int nonPawnMaterial = 0;
         for (PieceType pt : {PieceType::KNIGHT, PieceType::BISHOP, PieceType::ROOK, PieceType::QUEEN})
-        {
             nonPawnMaterial += MATERIAL_VALUES[(int)pt] * board.pieces(pt, board.sideToMove()).count();
-        }
         if (nonPawnMaterial >= 2 * MATERIAL_VALUES[(int)PieceType::ROOK])
         {
             board.makeNullMove();
@@ -99,16 +102,109 @@ int negamax(Board &board, int depth, int alpha, int beta,
         }
     }
 
-    if (depth <= 0)
-        return quiesce(board, alpha, beta, plyFromRoot + 1);
-
     int bestScore = INT_MIN;
     Move bestMove = Move::NULL_MOVE;
     int originalAlpha = alpha;
 
     orderMovesInPlace(
         board, legalMoves, plyFromRoot,
-        /*hashMove=*/std::nullopt,
+        hashMove != Move::NULL_MOVE ? std::optional<Move>(hashMove) : std::nullopt,
+        std::vector<Move>{killerMoves[plyFromRoot][0], killerMoves[plyFromRoot][1]},
+        historyHeuristic);
+
+    int moveIdx = 0;
+    for (auto move : legalMoves)
+    {
+        bool isCapture = board.isCapture(move);
+        bool isKiller = plyFromRoot < MAX_PLY &&
+                        (move == killerMoves[plyFromRoot][0] || move == killerMoves[plyFromRoot][1]);
+
+        board.makeMove(move);
+        bool givesCheck = board.inCheck();
+
+        int score;
+        // Late Move Reduction: reduce quiet, non-killer, non-check moves after the first few
+        if (depth >= 3 && moveIdx >= 2 && !isCapture && !isKiller && !givesCheck && !board.inCheck())
+        {
+            int reduction = 1 + (moveIdx >= 6 ? 1 : 0); // reduce more for very late moves
+            score = -negamax(board, depth - 1 - reduction, -alpha - 1, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
+            if (!timedOut && score > alpha)
+                score = -negamax(board, depth - 1, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
+        }
+        else
+        {
+            score = -negamax(board, depth - 1, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
+        }
+
+        board.unmakeMove(move);
+        moveIdx++;
+
+        if (timedOut)
+            break;
+
+        if (score > bestScore)
+        {
+            bestScore = score;
+            bestMove = move;
+        }
+        if (score > alpha)
+            alpha = score;
+        if (alpha >= beta)
+        {
+            if (!isCapture)
+            {
+                if (plyFromRoot < MAX_PLY)
+                {
+                    if (killerMoves[plyFromRoot][0] != move)
+                    {
+                        killerMoves[plyFromRoot][1] = killerMoves[plyFromRoot][0];
+                        killerMoves[plyFromRoot][0] = move;
+                    }
+                }
+                historyHeuristic[move.from().index()][move.to().index()] += depth * depth;
+            }
+            break;
+        }
+    }
+
+    if (!timedOut)
+        ttStore(board, depth, bestMove, bestScore, originalAlpha, beta, plyFromRoot);
+
+    return bestScore;
+}
+
+SearchResult negamaxRoot(Board &board, int depth, int alpha, int beta,
+                         std::chrono::steady_clock::time_point start, double timeLimit, int plyFromRoot, bool &timedOut)
+{
+    using namespace std::chrono;
+    if (timedOut)
+        return {0, Move::NULL_MOVE};
+    if (duration<double>(steady_clock::now() - start).count() > timeLimit)
+    {
+        timedOut = true;
+        return {0, Move::NULL_MOVE};
+    }
+
+    chess::Movelist legalMoves;
+    movegen::legalmoves(legalMoves, board);
+
+    if (board.isRepetition(1) || board.isInsufficientMaterial())
+        return {0, Move::NULL_MOVE};
+    if (board.isHalfMoveDraw())
+        return {0, Move::NULL_MOVE};
+    if (legalMoves.empty())
+        return {board.inCheck() ? -MATE_SCORE + plyFromRoot : 0, Move::NULL_MOVE};
+
+    int bestScore = INT_MIN;
+    Move bestMove = Move::NULL_MOVE;
+    int originalAlpha = alpha;
+
+    Move hashMove = Move::NULL_MOVE;
+    ttLookup(board, depth, alpha, beta, plyFromRoot, hashMove);
+
+    orderMovesInPlace(
+        board, legalMoves, plyFromRoot,
+        hashMove != Move::NULL_MOVE ? std::optional<Move>(hashMove) : std::nullopt,
         std::vector<Move>{killerMoves[plyFromRoot][0], killerMoves[plyFromRoot][1]},
         historyHeuristic);
 
@@ -125,83 +221,6 @@ int negamax(Board &board, int depth, int alpha, int beta,
         {
             bestScore = score;
             bestMove = move;
-        }
-        if (score > alpha)
-            alpha = score;
-        if (alpha >= beta)
-        {
-            // Killer moves: only for non-captures
-            if (!board.isCapture(move))
-            {
-                if (killerMoves[plyFromRoot][0] != move)
-                {
-                    killerMoves[plyFromRoot][1] = killerMoves[plyFromRoot][0];
-                    killerMoves[plyFromRoot][0] = move;
-                }
-                // History heuristic: only for quiet moves
-                historyHeuristic[move.from().index()][move.to().index()] += depth * depth;
-            }
-            break;
-        }
-    }
-
-    ttStore(board, depth, bestMove, bestScore, originalAlpha, beta, plyFromRoot);
-
-    return bestScore;
-}
-
-// Negamax root: finds best move and score
-SearchResult negamaxRoot(Board &board, int depth, int alpha, int beta,
-                         std::chrono::steady_clock::time_point start, double timeLimit, int plyFromRoot, bool &timedOut)
-{
-    using namespace std::chrono;
-    if (timedOut)
-        return {0, Move::NULL_MOVE};
-    if (duration<double>(steady_clock::now() - start).count() > timeLimit)
-    {
-        timedOut = true;
-        return {0, Move::NULL_MOVE};
-    }
-
-    chess::Movelist legalMoves;
-    movegen::legalmoves(legalMoves, board);
-
-    // Terminal detection
-    if (board.isRepetition(1) || board.isInsufficientMaterial())
-        return {0, Move::NULL_MOVE};
-    if (board.isHalfMoveDraw())
-        return {0, Move::NULL_MOVE};
-    if (legalMoves.empty())
-    {
-        if (board.sideToMove() == Color::WHITE)
-            return {board.inCheck() ? -MATE_SCORE + plyFromRoot : 0, Move::NULL_MOVE};
-        else
-            return {board.inCheck() ? -MATE_SCORE + plyFromRoot : 0, Move::NULL_MOVE};
-    }
-
-    int bestScore = INT_MIN;
-    Move bestMove = Move::NULL_MOVE;
-    int originalAlpha = alpha;
-
-    orderMovesInPlace(
-        board, legalMoves, plyFromRoot,
-        /*hashMove=*/std::nullopt,
-        std::vector<Move>{killerMoves[plyFromRoot][0], killerMoves[plyFromRoot][1]},
-        historyHeuristic);
-
-    for (auto move : legalMoves)
-    {
-        board.makeMove(move);
-        int score = -negamax(board, depth - 1, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
-        board.unmakeMove(move);
-
-        if (timedOut)
-            break;
-
-        if (score > bestScore || bestMove == Move::NULL_MOVE)
-        {
-            bestScore = score;
-            bestMove = move;
             std::cout << "info string Best move so far: " << uci::moveToUci(bestMove) << " with score " << bestScore << "\n";
         }
         if (score > alpha)
@@ -210,33 +229,26 @@ SearchResult negamaxRoot(Board &board, int depth, int alpha, int beta,
             break;
     }
 
-    ttStore(board, depth, bestMove, bestScore, originalAlpha, beta, plyFromRoot);
+    if (!timedOut)
+        ttStore(board, depth, bestMove, bestScore, originalAlpha, beta, plyFromRoot);
 
     return {bestScore, bestMove};
 }
 
 Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining, double increment)
 {
-    // Clear killer moves and history heuristic
-    for (int i = 0; i < MAX_PLY; ++i)
-    {
-        killerMoves[i][0] = Move::NULL_MOVE;
-        killerMoves[i][1] = Move::NULL_MOVE;
-    }
-    for (int i = 0; i < 64; ++i)
-        for (int j = 0; j < 64; ++j)
-            historyHeuristic[i][j] = 0;
+    resetSearchState();
+    ttClear();
 
-    TT.clear();
     int moveNumber = board.fullMoveNumber();
     chess::Movelist legalMoves;
     movegen::legalmoves(legalMoves, board);
 
     int movesToGo = std::max(1, std::min(40, 60 - moveNumber));
-    double reserve = 1.0; // Always keep at least 1 second
+    double reserve = 1.0;
     double timeForMove = std::max(0.05, std::min(
                                             (totalTimeRemaining - reserve) / movesToGo + 0.5 * increment,
-                                            0.5 * totalTimeRemaining)); // Never use more than 50% of remaining time
+                                            0.5 * totalTimeRemaining));
 
     auto start = std::chrono::steady_clock::now();
 
@@ -254,13 +266,12 @@ Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining
         std::cout << "info string Searching at depth " << depth << "\n";
         bool timedOut = false;
 
-        int window = 50; // centipawns
+        int window = 50;
         int alpha = std::max(-MATE_SCORE, prevScore - window);
         int beta = std::min(MATE_SCORE, prevScore + window);
         SearchResult result;
         Move move;
 
-        // Aspiration window loop
         while (true)
         {
             result = negamaxRoot(board, depth, alpha, beta, start, timeForMove, 0, timedOut);
@@ -274,17 +285,13 @@ Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining
 
             if (result.score <= alpha)
             {
-                // Fail-low: widen window down
                 alpha = std::max(-MATE_SCORE, alpha - window);
-                beta = std::min(MATE_SCORE, beta);
                 window *= 2;
                 std::cout << "info string Aspiration window fail-low, widening window\n";
                 continue;
             }
             else if (result.score >= beta)
             {
-                // Fail-high: widen window up
-                alpha = std::max(-MATE_SCORE, alpha);
                 beta = std::min(MATE_SCORE, beta + window);
                 window *= 2;
                 std::cout << "info string Aspiration window fail-high, widening window\n";
@@ -292,7 +299,6 @@ Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining
             }
             else
             {
-                // Score within window
                 break;
             }
         }
@@ -315,7 +321,6 @@ Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining
             break;
         }
 
-        // Early exit if time is almost up
         double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
         if (elapsed > 0.9 * timeForMove)
         {

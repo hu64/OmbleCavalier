@@ -119,7 +119,7 @@ Both engines are at feature parity. Future improvements apply to both unless not
 
 ### High Priority
 
-- [ ] **Late Move Reduction (LMR)** — Reduce search depth for late quiet moves. Est. +50–80 Elo. _Both engines._
+- [x] **Late Move Reduction (LMR)** — Quiet, non-killer, non-check moves after index 2 get depth-1 or depth-2 reduction with re-search on fail-high. _Both engines._
 - [ ] **Principal Variation Search (PVS)** — Zero-window search after first move. Est. +20–40 Elo. _Both engines._
 - [ ] **Futility / Razoring Pruning** — Prune clearly bad nodes near leaf. Est. +30–50 Elo. _Both engines._
 - [ ] **SEE (Static Exchange Evaluation)** — Replace MVV-LVA with accurate capture ordering. Est. +15–30 Elo. _Both engines._
@@ -154,6 +154,12 @@ Both engines are at feature parity. Future improvements apply to both unless not
 
 ### Fixed
 
+- ~~**C++ — PST indexing inverted**~~ Fixed: White pieces now use `mirror(sq)` and Black pieces use `sq` directly to correctly map chess.hpp's a1=0 convention to the PST's a8=0 convention. A White pawn near promotion was previously getting a *penalty* (rank-2 PST value) instead of a +50 bonus.
+- ~~**C++ — `position fen` command not handled**~~ Fixed: engine can now accept arbitrary FEN positions with or without a moves list.
+- ~~**C++ — Hash move not used for move ordering**~~ Fixed: TT lookup now always extracts the best move and passes it to `orderMovesInPlace`, even when depth is insufficient for a score cutoff.
+- ~~**C++ — Check bonus dead code in move ordering**~~ Fixed: moved before the history heuristic branch so it actually fires.
+- ~~**C++ — TT used `unordered_map`**~~ Fixed: replaced with a 1M-entry fixed-size array for O(1) cache-friendly access (~24 MB).
+- ~~**C++ — `ucinewgame` only cleared TT**~~ Fixed: now also resets killer moves and history heuristic via `resetSearchState()`.
 - ~~**Python — `ucinewgame` did not clear transposition table**~~ Fixed: `reset_search_state()` clears TT, killers, and history on every new game and search.
 - ~~**Python — Quiescence search returned `beta` instead of `stand_pat` on cutoff**~~ Fixed: now returns the correct `stand_pat` / `score` value.
 - ~~**Python — Mobility recalculated inside `evaluate_board`**~~ Fixed: legal moves are generated once per node and the count is passed to `evaluate_board`.

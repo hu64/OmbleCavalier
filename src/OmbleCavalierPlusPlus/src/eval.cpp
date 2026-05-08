@@ -200,7 +200,9 @@ int evaluateBoard(const Board &board, int plyFromRoot, Movelist &moves)
                 score += colorSign * pieceValue;
                 if (pst)
                 {
-                    int pstIdx = (color == Color::WHITE) ? sq : mirror(sq);
+                    // chess.hpp uses a1=0, h8=63; PST arrays are written with a8=0 (standard engine format)
+                    // White needs mirror() to convert; Black uses sq directly (already equivalent to mirrored White)
+                    int pstIdx = (color == Color::WHITE) ? mirror(sq) : sq;
                     score += colorSign * pst[pstIdx];
                 }
             }
