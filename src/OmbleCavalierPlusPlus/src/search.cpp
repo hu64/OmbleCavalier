@@ -66,20 +66,21 @@ int negamax(Board &board, int depth, int alpha, int beta,
         return 0;
     }
 
+    if (board.isRepetition(1) || board.isInsufficientMaterial())
+        return 0;
+    if (board.isHalfMoveDraw())
+        return 0;
+
     chess::Movelist legalMoves;
     movegen::legalmoves(legalMoves, board);
+
+    if (legalMoves.empty())
+        return board.inCheck() ? -MATE_SCORE + plyFromRoot : 0;
 
     Move hashMove = Move::NULL_MOVE;
     auto ttVal = ttLookup(board, depth, alpha, beta, plyFromRoot, hashMove);
     if (ttVal.has_value())
         return ttVal.value();
-
-    if (board.isRepetition(1) || board.isInsufficientMaterial())
-        return 0;
-    if (board.isHalfMoveDraw())
-        return 0;
-    if (legalMoves.empty())
-        return board.inCheck() ? -MATE_SCORE + plyFromRoot : 0;
 
     if (depth <= 0)
         return quiesce(board, alpha, beta, plyFromRoot + 1);
