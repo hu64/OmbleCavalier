@@ -43,7 +43,7 @@ Can run on:
 
 ## Included Engines
 
-This repository includes two example chess engines that can be used with lichess-bot:
+This repository includes two chess engines built for this bot:
 
 ### ♞ OmbleCavalierPlusPlus (C++)
 A modern C++ chess engine with UCI protocol support.
@@ -52,9 +52,15 @@ A modern C++ chess engine with UCI protocol support.
 - UCI protocol compatibility
 - Polyglot opening book support
 - Iterative deepening with alpha-beta pruning
+- Aspiration windows
 - Transposition table (hash table)
 - Killer move & history heuristics
-- MVV-LVA and check bonuses for move ordering
+- MVV-LVA capture ordering
+- Piece-square tables (PST)
+- Pawn structure analysis (doubled, isolated, passed pawns)
+- King safety (pawn shield, open files)
+- Bishop pair bonus
+- Null move pruning
 - Bitboard-based fast evaluation
 - Built-in puzzle test suite
 - Benchmarking utility
@@ -74,16 +80,23 @@ make
 ```
 
 ### ♞ OmbleCavalier (Python)
-A UCI-compatible chess engine written in Python with negamax search.
+A UCI-compatible chess engine written in Python with negamax search, now at feature parity with the C++ engine.
 
 **Features:**
-- UCI protocol support
+- UCI protocol support (`position fen`, `wtime`/`btime`/`winc`/`binc`)
 - Negamax search with alpha-beta pruning
+- Iterative deepening with aspiration windows
 - Quiescence search
-- Move ordering heuristics
+- Null move pruning (via FEN turn-swap)
+- Killer move & history heuristics
+- MVV-LVA capture ordering
+- Piece-square tables (PST) — same tables as C++
+- Pawn structure analysis (doubled, isolated, passed pawns)
+- King safety (pawn shield, open files)
+- Bishop pair bonus
+- Adaptive time management (move number, increment, reserve)
 - Transposition table
 - Polyglot opening book support
-- Lightweight evaluation (material, mobility)
 - Random-move engine for testing
 - Puzzle-based testing with pytest
 
@@ -102,69 +115,55 @@ pyinstaller --onefile --distpath engines omblecavalier/engines/omble_cavalier.py
 
 ## Elo Improvement Roadmap
 
-### Feature Parity First (Highest Priority)
+Both engines are at feature parity. Future improvements apply to both unless noted.
 
-To keep both engines aligned, these features should be implemented across both:
+### High Priority
 
-**Python engine needs to catch up:**
-1. **Iterative Deepening** — C++ has it; Python uses fixed depth. Estimated +30-40 Elo and enables time management
-2. **Killer Move Heuristics** — C++ has it; improves move ordering. Estimated +20-30 Elo
-3. **History Heuristics** — C++ has it; refines move ordering. Estimated +15-25 Elo
-4. **MVV-LVA Move Ordering** — C++ has it; prioritizes captures. Estimated +10-20 Elo
-5. **Check Detection in Move Ordering** — C++ has bonus for checks; add to Python. Estimated +10-15 Elo
-6. **Null Move Pruning** — C++ has it; Python doesn't. Estimated +25-35 Elo
-7. **Built-in Benchmarking Utility** — C++ has it; add to Python for testing parity
+- [ ] **Late Move Reduction (LMR)** — Reduce search depth for late quiet moves. Est. +50–80 Elo. _Both engines._
+- [ ] **Principal Variation Search (PVS)** — Zero-window search after first move. Est. +20–40 Elo. _Both engines._
+- [ ] **Futility / Razoring Pruning** — Prune clearly bad nodes near leaf. Est. +30–50 Elo. _Both engines._
+- [ ] **SEE (Static Exchange Evaluation)** — Replace MVV-LVA with accurate capture ordering. Est. +15–30 Elo. _Both engines._
+- [ ] **Endgame-specific PSTs (King activity)** — King should centralize in endgame. Est. +15–25 Elo. _Both engines._
 
+### Medium Priority
 
-### Additional Elo Improvements (After Parity)
+- [ ] **Repetition detection in Python** — `bulletchess` `DRAW` may not catch all repetitions; add explicit repetition tracking. _Python only._
+- [ ] **Native null move in Python** — Current FEN-based approach works but is slower than a native null move; consider patching bulletchess or using a workaround. _Python only._
+- [ ] **Endgame Tablebase (Syzygy) direct integration** — Online EGTB already configured in lichess-bot; add direct engine-side probe for faster response. Est. +50–100 Elo in endgames. _Both engines._
+- [ ] **Tapered evaluation (midgame/endgame blend)** — PSTs and king safety should shift as material comes off the board. Est. +20–40 Elo. _Both engines._
+- [ ] **Pawn hash table** — Cache pawn structure scores independently. _Both engines._
 
-Once both engines have feature parity, these optimizations apply to both:
+### Lower Priority / Polish
 
-1. **Late Move Reduction (LMR)** — Reduce search depth for late quiet moves. Estimated +50-80 Elo
-2. **Aspiration Windows** — Use tight alpha-beta windows based on previous iteration. Estimated +20-40 Elo
-3. **Razoring/Futility Pruning** — Prune obviously bad positions. Estimated +30-50 Elo (C++ only for now; Python needs iterative deepening first)
-4. **Advanced Evaluation** — Pawn structure analysis, king safety, tropism. Estimated +40-60 Elo
-5. **Endgame Tablebase Support** — Already enabled in lichess-bot config! Estimated +50-100 Elo in endgames
+- [ ] **Built-in benchmarking for Python** — Port the C++ `bench` command. _Python only._
+- [ ] **Puzzle test suite for C++** — Expand puzzle coverage and CI integration. _C++ only._
+- [ ] **Multi-PV output** — Report multiple best lines for analysis mode. _Both engines._
 
-## Known Issues & Logic Differences
+## Known Issues
 
-### Critical Bugs Found
+### Remaining (Open)
 
-1. **Python Engine - Terminal Node Detection (HIGH PRIORITY)**
-   - **Issue**: Python checks `if board in CHECKMATE/DRAW` in evaluation, but this doesn't catch all draws (50-move rule, repetition)
-   - **C++ Approach**: Correctly checks `isRepetition(1)`, `isInsufficientMaterial()`, `isHalfMoveDraw()` separately in search
-   - **Impact**: Python engine may be playing drawn positions as if they're playable (~40 Elo loss in long games)
-   - **Fix**: Import repetition/draw tracking from board state into Python engine
+1. **Python — Repetition detection incomplete**
+   - `board in DRAW` from bulletchess may not catch all repetitions mid-search.
+   - The 50-move rule is now handled via `board.halfmove_clock >= 100`.
+   - **Fix**: Track board hashes in a stack and detect three-fold repetition explicitly.
 
-2. **Quiescence Search - Beta Cutoff Logic (MEDIUM)**
-   - **Python**: Returns `beta` on beta cutoff but should return actual `score`
-   - **C++**: Correctly returns `stand_pat` on beta cutoff 
-   - **Impact**: Minor evaluation inaccuracy in endgames
-   - **Fix**: Change `return beta` to `return stand_pat` when `score >= beta` in Python
+2. **Python — Null move via FEN is slow**
+   - The null move is implemented by flipping the turn in the FEN string and creating a new `Board`. This works but is slower than a native make/unmake null move.
+   - **Fix**: Contribute null-move support to bulletchess, or implement a workaround at the engine level.
 
-3. **Python Engine - Mobility Calculation (MEDIUM)**
-   - **Issue**: Recalculates `legal_moves()` every time in `evaluate_board()` which is expensive and called frequently
-   - **Impact**: Massive performance penalty (50-100 ms per position)
-   - **Fix**: Pass pre-calculated move count or cache it
+### Fixed
 
-### Logic Differences (Not Bugs, But Divergent)
-
-| Feature | C++ (OmbleCavalierPlusPlus) | Python (OmbleCavalier) | Impact |
-|---------|--------|---------|--------|
-| **Evaluation** | Material + PST + Pawn Structure + King Safety + Bishop Pair | Material + Mobility Only | C++ is ~100+ Elo stronger |
-| **Move Ordering** | MVV-LVA, Killer Moves, History Heuristics, Check Bonus | Basic sorting by capture value | C++ searches 50%+ fewer nodes |
-| **Null Move Pruning** | ✓ Implemented | ✗ Missing | C++ searches faster |
-| **Terminal Detection** | Comprehensive (repetition, draw, mate) | Incomplete (only checks final state) | Python misses draws mid-game |
-| **Quiescence** | Includes checks as forcing moves | Capture-only | Both acceptable but different |
-| **Transposition Table** | Full UCI/depth integration | Basic hash lookup | Both functional but different depths |
-
-### Recommended Harmonization Order
-
-1. **First**: Fix Python's terminal node detection (critical draw bug)
-2. **Second**: Fix Python's quiescence cutoff logic  
-3. **Third**: Add mobility caching to Python
-4. **Then**: Add matching evaluation terms to Python (PST, pawn structure)
-5. **Finally**: Add matching search techniques (null move, killer moves)
+- ~~**Python — `ucinewgame` did not clear transposition table**~~ Fixed: `reset_search_state()` clears TT, killers, and history on every new game and search.
+- ~~**Python — Quiescence search returned `beta` instead of `stand_pat` on cutoff**~~ Fixed: now returns the correct `stand_pat` / `score` value.
+- ~~**Python — Mobility recalculated inside `evaluate_board`**~~ Fixed: legal moves are generated once per node and the count is passed to `evaluate_board`.
+- ~~**Python — No killer or history heuristics**~~ Fixed: both implemented matching C++.
+- ~~**Python — No PST, pawn structure, or king safety**~~ Fixed: all evaluation terms ported from C++.
+- ~~**Python — No null move pruning**~~ Fixed: implemented via FEN turn-swap.
+- ~~**Python — No aspiration windows**~~ Fixed: implemented in iterative deepening loop.
+- ~~**Python — Poor time management (no increment, no move number)**~~ Fixed: matches C++ formula.
+- ~~**Python — `position fen` command not handled**~~ Fixed.
+- ~~**Python — `winc`/`binc` not parsed**~~ Fixed.
 
 ## Steps
 1. [Install lichess-bot](https://github.com/lichess-bot-devs/lichess-bot/wiki/How-to-Install)
