@@ -1,4 +1,5 @@
 *.yml
+!.github/**/*.yml
 **/__pycache__
 /engines/*
 !/engines/README.md
@@ -8,6 +9,7 @@ lichess_bot_auto_logs/*
 *.pgn
 *.log
 *.txt
+!**/CMakeLists.txt
 TEMP/*
 build/*
 dist/*

@@ -345,6 +345,20 @@ def king_safety(board, color, phase: int) -> int:
     return penalty * phase // 24
 
 
+def rook_open_file_bonus(board, color) -> int:
+    """Bonus for rooks on open (+20) or semi-open (+10) files."""
+    opp = BLACK if color == WHITE else WHITE
+    sq_map = SQ_TO_INT
+    my_pawn_files = {sq_map[sq] % 8 for sq in board[color, PIECE_TYPES[0]]}
+    opp_pawn_files = {sq_map[sq] % 8 for sq in board[opp, PIECE_TYPES[0]]}
+    bonus = 0
+    for sq in board[color, PIECE_TYPES[3]]:
+        f = sq_map[sq] % 8
+        if f not in my_pawn_files:
+            bonus += 20 if f not in opp_pawn_files else 10
+    return bonus
+
+
 # ---------------------------------------------------------------------------
 # Evaluation
 # ---------------------------------------------------------------------------
@@ -397,6 +411,8 @@ def evaluate_board_full(board, legal_moves_count):
     score -= pawn_structure(board, BLACK, phase)
     score -= king_safety(board, WHITE, phase)
     score += king_safety(board, BLACK, phase)
+    score += rook_open_file_bonus(board, WHITE)
+    score -= rook_open_file_bonus(board, BLACK)
 
     score += legal_moves_count * 5 if board.turn == WHITE else -legal_moves_count * 5
     return score if board.turn == WHITE else -score
@@ -495,6 +511,7 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, 
         return quiesce(board, alpha, beta, ply_from_root, legal_moves, stand_pat)
 
     in_check = board in CHECK
+    extension = 1 if in_check else 0
 
     # Null move pruning (copy + attribute mutation avoids slow FEN roundtrip)
     if depth >= 3 and not in_check:
@@ -516,6 +533,11 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, 
     best_score = float("-inf")
     move_idx = 0
 
+    # Futility pruning: at depth 1, skip quiet moves that can't raise alpha
+    FUTILITY_MARGIN = 300
+    can_futility_prune = depth == 1 and not in_check
+    static_eval = evaluate_board_full(board, len(legal_moves)) if can_futility_prune else None
+
     if rep_counts is not None:
         rep_counts[current_key] = rep_counts.get(current_key, 0) + 1
 
@@ -526,22 +548,26 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, 
                 move == killer_moves[ply_from_root][0] or move == killer_moves[ply_from_root][1]
             )
 
+            if can_futility_prune and not is_capture and not is_killer and static_eval + FUTILITY_MARGIN < alpha:
+                move_idx += 1
+                continue
+
             board.apply(move)
             gives_check = board in CHECK
 
             # Late Move Reduction: quiet, non-killer, non-check moves after the first few
             if not in_check and depth >= 3 and move_idx >= 2 and not is_capture and not is_killer and not gives_check:
                 reduction = 1 + (1 if move_idx >= 6 else 0)
-                score = negamax(board, depth - 1 - reduction, -alpha - 1, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
+                score = negamax(board, depth - 1 + extension - reduction, -alpha - 1, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
                 if score is not None:
                     score = -score
                     if score > alpha:
                         # Fail-high on reduced search: re-search at full depth
-                        score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
+                        score = negamax(board, depth - 1 + extension, -beta, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
                         if score is not None:
                             score = -score
             else:
-                score = negamax(board, depth - 1, -beta, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
+                score = negamax(board, depth - 1 + extension, -beta, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
                 if score is not None:
                     score = -score
 

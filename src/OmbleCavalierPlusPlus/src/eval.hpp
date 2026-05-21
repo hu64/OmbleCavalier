@@ -26,3 +26,4 @@ int gamePhase(const chess::Board &board);
 int countDoubledPawns(const chess::Board &board, chess::Color color);
 int countIsolatedPawns(const chess::Board &board, chess::Color color);
 int countPassedPawns(const chess::Board &board, chess::Color color);
+int rookOpenFileBonus(const chess::Board &board, chess::Color color);

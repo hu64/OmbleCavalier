@@ -82,11 +82,14 @@ int negamax(Board &board, int depth, int alpha, int beta,
     if (ttVal.has_value())
         return ttVal.value();
 
+    bool inCheck = board.inCheck();
+    int extension = inCheck ? 1 : 0;
+
     if (depth <= 0)
         return quiesce(board, alpha, beta, plyFromRoot + 1);
 
     // Null move pruning
-    if (depth >= 3 && !board.inCheck())
+    if (depth >= 3 && !inCheck)
     {
         int nonPawnMaterial = 0;
         for (PieceType pt : {PieceType::KNIGHT, PieceType::BISHOP, PieceType::ROOK, PieceType::QUEEN})
@@ -113,6 +116,11 @@ int negamax(Board &board, int depth, int alpha, int beta,
         std::vector<Move>{killerMoves[plyFromRoot][0], killerMoves[plyFromRoot][1]},
         historyHeuristic);
 
+    // Futility pruning: at depth 1, skip quiet moves that can't raise alpha
+    static const int FUTILITY_MARGIN = 300;
+    bool canFutilityPrune = depth == 1 && !inCheck;
+    int staticEval = canFutilityPrune ? evaluateBoard(board, plyFromRoot, legalMoves) : INT_MIN;
+
     int moveIdx = 0;
     for (auto move : legalMoves)
     {
@@ -120,21 +128,27 @@ int negamax(Board &board, int depth, int alpha, int beta,
         bool isKiller = plyFromRoot < MAX_PLY &&
                         (move == killerMoves[plyFromRoot][0] || move == killerMoves[plyFromRoot][1]);
 
+        if (canFutilityPrune && !isCapture && !isKiller && staticEval + FUTILITY_MARGIN < alpha)
+        {
+            moveIdx++;
+            continue;
+        }
+
         board.makeMove(move);
         bool givesCheck = board.inCheck();
 
         int score;
         // Late Move Reduction: reduce quiet, non-killer, non-check moves after the first few
-        if (depth >= 3 && moveIdx >= 2 && !isCapture && !isKiller && !givesCheck && !board.inCheck())
+        if (!inCheck && depth >= 3 && moveIdx >= 2 && !isCapture && !isKiller && !givesCheck)
         {
             int reduction = 1 + (moveIdx >= 6 ? 1 : 0); // reduce more for very late moves
-            score = -negamax(board, depth - 1 - reduction, -alpha - 1, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
+            score = -negamax(board, depth - 1 + extension - reduction, -alpha - 1, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
             if (!timedOut && score > alpha)
-                score = -negamax(board, depth - 1, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
+                score = -negamax(board, depth - 1 + extension, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
         }
         else
         {
-            score = -negamax(board, depth - 1, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
+            score = -negamax(board, depth - 1 + extension, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
         }
 
         board.unmakeMove(move);

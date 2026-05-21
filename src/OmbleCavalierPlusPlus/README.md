@@ -13,11 +13,19 @@ https://lichess.org/@/OmbleCavalierPP
 ## ✨ Features
 - ♟️ **UCI protocol** support (compatible with most chess GUIs)
 - 📖 **Polyglot opening book** support
-- 🔍 **Iterative deepening**, alpha-beta pruning, null move pruning
-- 🗂️ **Transposition table** (hash table)
+- 🔍 **Iterative deepening** with **aspiration windows**
+- ✂️ **Alpha-beta pruning** with **null move pruning** (R=3)
+- ⏩ **Late Move Reduction (LMR)** for quiet moves
+- 🛡️ **Check extension** — extends search by 1 ply when in check
+- 🔪 **Futility pruning** at depth 1 to skip losing quiet moves
+- 🗂️ **Transposition table** with move-score flags
 - ⚔️ **Killer move & history heuristics** for move ordering
 - 🎯 **MVV-LVA** and check bonuses for tactical move ordering
-- ⚡ **Bitboard-based fast evaluation**
+- ⚡ **Tapered PESTO evaluation** (middlegame/endgame piece-square tables)
+- 👑 **King safety** (pawn shield, open files, pawn storm)
+- 🏰 **Pawn structure** (doubled, isolated, passed pawns with rank-scaled bonuses)
+- 🏛️ **Rook on open/semi-open file** bonuses
+- 💡 **Bishop pair** bonus
 - 🧩 Built-in **puzzle test suite**
 - 📊 **Benchmarking utility**
 

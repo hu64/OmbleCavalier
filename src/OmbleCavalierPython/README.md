@@ -9,16 +9,28 @@ Challenge me on lichess.org: https://lichess.org/@/OmbleCavalier
 ## 🚀 Features
 
 - Supports the UCI protocol
-- Negamax search with:
+- **Iterative deepening** with **aspiration windows**
+- **Negamax** search with:
   - Alpha-beta pruning
+  - Null move pruning (R=3)
+  - Late Move Reduction (LMR) for quiet moves
+  - Check extension — extends search by 1 ply when in check
+  - Futility pruning at depth 1 to skip losing quiet moves
   - Quiescence search
-  - Move ordering heuristics
+  - Killer move & history heuristics for move ordering
+  - MVV-LVA capture ordering
   - Transposition table
+  - Repetition detection
 - [Opening book (Polyglot, The Baron)](https://www.chessprogramming.net/new-version-of-the-baron-v3-43-plus-the-barons-polyglot-opening-book/)
-- Lightweight evaluation function (material, mobility)
+- **Tapered PESTO evaluation** (middlegame/endgame piece-square tables) with:
+  - King safety (pawn shield, open files, pawn storm)
+  - Pawn structure (doubled, isolated, passed pawns with rank-scaled bonuses)
+  - Rook on open/semi-open file bonuses
+  - Bishop pair bonus
+  - Mobility
 - Random-move UCI engine for benchmarking
 - Puzzle-based testing with Pytest
-- Project managed with Poetry and `pyproject.toml`
+- Project managed with `pyproject.toml`
 - Build executable with PyInstaller
 
 ## 🗂️ Project Structure
@@ -28,10 +40,11 @@ omblecavalier/
 ├── omblecavalier/
 │   └── engines/
 │       ├── omble_cavalier.py       # Main negamax engine
-│       └── random_engine.py        # Random move engine (UCI-compatible)
+│       └── uci_random_moves.py     # Random move engine (UCI-compatible)
 ├── tests/
-│   └── test_puzzles.py             # Pytest unit tests with tactical positions
-├── pyproject.toml                  # Poetry dependency and package config
+│   ├── test_puzzles.py             # Pytest unit tests with tactical positions
+│   └── test_eval.py                # Pytest unit tests for evaluation functions
+├── pyproject.toml                  # Dependency and package config
 ├── README.md                       # Project documentation
 └── dist/                           # Built executable (via PyInstaller)
 ```
@@ -109,8 +122,8 @@ cutechess-cli \
 ## 🛠️ Future Enhancements
 
 - [ ] Endgame tablebase integration
-- [ ] More advanced evaluation (tropism, king safety, etc.)
-- [ ] Integration with Lichess as a playing bot
+- [ ] Piece tropism (king proximity bonuses)
+- [ ] Syzygy endgame tablebases
 
 ## 📜 License
 

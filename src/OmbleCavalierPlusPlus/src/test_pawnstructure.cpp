@@ -58,9 +58,41 @@ bool testPassedPawnsBlackBlockedbyKnight()
     return countPassedPawns(board, Color::BLACK) == 3;
 }
 
+bool testRookOpenFile()
+{
+    Board board;
+    // White rook on d4, no pawns on d-file at all → open file (+20)
+    board.setFen("k7/8/8/8/3R4/8/PP3PPP/K7 w - - 0 1");
+    return rookOpenFileBonus(board, Color::WHITE) == 20;
+}
+
+bool testRookSemiOpenFile()
+{
+    Board board;
+    // White rook on d4, black pawn on d7, no white pawn on d → semi-open (+10)
+    board.setFen("k7/3p4/8/8/3R4/8/PP3PPP/K7 w - - 0 1");
+    return rookOpenFileBonus(board, Color::WHITE) == 10;
+}
+
+bool testRookBlockedByOwnPawn()
+{
+    Board board;
+    // White rook on d4, white pawn on d3 → no bonus
+    board.setFen("k7/8/8/8/3R4/3P4/PP3PPP/K7 w - - 0 1");
+    return rookOpenFileBonus(board, Color::WHITE) == 0;
+}
+
+bool testTwoRooksOpenFiles()
+{
+    Board board;
+    // White rooks on d4 and e4, no pawns on d or e files → 2 open files (+40)
+    board.setFen("k7/8/8/8/3RR3/8/PP3PPP/K7 w - - 0 1");
+    return rookOpenFileBonus(board, Color::WHITE) == 40;
+}
+
 int main(int argc, char *argv[])
 {
-    int passed = 0, total = 6;
+    int passed = 0, total = 10;
 
     if (argc == 2)
     {
@@ -79,6 +111,14 @@ int main(int argc, char *argv[])
             return testPassedPawnsBlack() ? 0 : 1;
         if (test == "testPassedPawnsBlackBlockedbyKnight")
             return testPassedPawnsBlackBlockedbyKnight() ? 0 : 1;
+        if (test == "testRookOpenFile")
+            return testRookOpenFile() ? 0 : 1;
+        if (test == "testRookSemiOpenFile")
+            return testRookSemiOpenFile() ? 0 : 1;
+        if (test == "testRookBlockedByOwnPawn")
+            return testRookBlockedByOwnPawn() ? 0 : 1;
+        if (test == "testTwoRooksOpenFiles")
+            return testTwoRooksOpenFiles() ? 0 : 1;
         std::cout << "Unknown test: " << test << std::endl;
         return 2;
     }
@@ -131,6 +171,38 @@ int main(int argc, char *argv[])
     }
     else
         std::cout << "testPassedPawnsBlack FAILED\n";
+
+    if (testRookOpenFile())
+    {
+        std::cout << "testRookOpenFile passed\n";
+        ++passed;
+    }
+    else
+        std::cout << "testRookOpenFile FAILED\n";
+
+    if (testRookSemiOpenFile())
+    {
+        std::cout << "testRookSemiOpenFile passed\n";
+        ++passed;
+    }
+    else
+        std::cout << "testRookSemiOpenFile FAILED\n";
+
+    if (testRookBlockedByOwnPawn())
+    {
+        std::cout << "testRookBlockedByOwnPawn passed\n";
+        ++passed;
+    }
+    else
+        std::cout << "testRookBlockedByOwnPawn FAILED\n";
+
+    if (testTwoRooksOpenFiles())
+    {
+        std::cout << "testTwoRooksOpenFiles passed\n";
+        ++passed;
+    }
+    else
+        std::cout << "testTwoRooksOpenFiles FAILED\n";
 
     std::cout << passed << "/" << total << " tests passed.\n";
     return (passed == total) ? 0 : 1;

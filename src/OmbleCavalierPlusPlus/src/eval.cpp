@@ -185,6 +185,30 @@ int pawnStructure(const Board &board, Color color, int phase)
     return (mg * phase + eg * (TOTAL_PHASE - phase)) / TOTAL_PHASE;
 }
 
+// Rook on open/semi-open file bonus (phase-independent structural bonus)
+int rookOpenFileBonus(const Board &board, Color color)
+{
+    int bonus = 0;
+    chess::Bitboard rooks = board.pieces(PieceType::ROOK, color);
+    chess::Bitboard myPawns = board.pieces(PieceType::PAWN, color);
+    chess::Bitboard oppPawns = board.pieces(PieceType::PAWN, ~color);
+
+    while (rooks)
+    {
+        int sq = rooks.lsb();
+        rooks.clear(sq);
+        int file = sq % 8;
+        chess::Bitboard fileMask = chess::Bitboard(File(file));
+        bool hasMyPawn = static_cast<bool>(myPawns & fileMask);
+        bool hasOppPawn = static_cast<bool>(oppPawns & fileMask);
+        if (!hasMyPawn && !hasOppPawn)
+            bonus += 20; // open file
+        else if (!hasMyPawn)
+            bonus += 10; // semi-open file
+    }
+    return bonus;
+}
+
 // Main evaluation (always returns score from side-to-move's perspective)
 int evaluateBoard(const Board &board, int plyFromRoot, Movelist &moves)
 {
@@ -239,6 +263,10 @@ int evaluateBoard(const Board &board, int plyFromRoot, Movelist &moves)
     // King safety (phase-weighted, fades to zero in endgame)
     score -= kingSafety(board, Color::WHITE, phase);
     score += kingSafety(board, Color::BLACK, phase);
+
+    // Rook on open/semi-open file
+    score += rookOpenFileBonus(board, Color::WHITE);
+    score -= rookOpenFileBonus(board, Color::BLACK);
 
     // Mobility (side to move only)
     score += (board.sideToMove() == Color::WHITE ? 1 : -1) * (int(moves.size()) * 5);
