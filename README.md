@@ -1,5 +1,7 @@
 # OmbleCavalier Chess Engines
 
+[![Engine CI](https://github.com/hu64/OmbleCavalier/actions/workflows/engine-ci.yml/badge.svg)](https://github.com/hu64/OmbleCavalier/actions/workflows/engine-ci.yml)
+
 Two UCI-compatible chess engines — one in C++, one in Python — built to run as bots on [Lichess](https://lichess.org) via [lichess-bot](https://github.com/lichess-bot-devs/lichess-bot).
 
 > **Challenge them on Lichess:**
