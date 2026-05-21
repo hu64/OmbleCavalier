@@ -1,0 +1,47 @@
+name: Engine CI
+
+on:
+  push:
+    branches: [ master ]
+  pull_request:
+    branches: [ master ]
+
+jobs:
+  cpp:
+    name: C++ Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -B src/OmbleCavalierPlusPlus/build -S src/OmbleCavalierPlusPlus
+
+      - name: Build
+        run: cmake --build src/OmbleCavalierPlusPlus/build --parallel
+
+      - name: Test
+        run: ctest --test-dir src/OmbleCavalierPlusPlus/build --output-on-failure
+
+  python-engine:
+    name: Python Engine Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Test Python engine
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src/OmbleCavalierPython
+        run: uv run pytest src/OmbleCavalierPython/tests/ -v
