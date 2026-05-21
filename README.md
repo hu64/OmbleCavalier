@@ -26,8 +26,13 @@ The engine receives UCI commands from lichess-bot, sets up the board using [Diss
 | **Search** | Negamax with alpha-beta pruning |
 | | Iterative deepening |
 | | Aspiration windows |
+| | Principal Variation Search (PVS) |
 | | Null move pruning (R=3) |
-| | Late Move Reduction (LMR) |
+| | Late Move Reduction (LMR) — depth-aware, up to 3 ply for deep/late moves |
+| | Reverse Futility Pruning (RFP) at depth ≤ 5 |
+| | Check extension (1 ply) |
+| | Futility pruning at depth 1–2 (check-giving moves excluded) |
+| | Delta pruning in quiescence search |
 | | Quiescence search |
 | **Move ordering** | Hash move (from TT) |
 | | MVV-LVA capture ordering |
@@ -39,6 +44,8 @@ The engine receives UCI commands from lichess-bot, sets up the board using [Diss
 | | Separate MG/EG material values |
 | | Pawn structure — phase-weighted (doubled, isolated, rank-scaled passed) |
 | | King safety — phase-weighted (pawn shield, open files, pawn storm) |
+| | Rook on open / semi-open file bonus |
+| | Rook on 7th rank bonus |
 | | Bishop pair bonus |
 | | Mobility |
 | **Infrastructure** | Fixed-size transposition table (~24 MB) |
@@ -105,8 +112,13 @@ Uses [bulletchess](https://github.com/zedeckj/bulletchess) for fast board repres
 | **Search** | Negamax with alpha-beta pruning |
 | | Iterative deepening |
 | | Aspiration windows |
-| | Null move pruning (R=3, via FEN turn-swap) |
-| | Late Move Reduction (LMR) |
+| | Principal Variation Search (PVS) |
+| | Null move pruning (R=3, via board copy + turn-swap) |
+| | Late Move Reduction (LMR) — depth-aware, up to 3 ply for deep/late moves |
+| | Reverse Futility Pruning (RFP) at depth ≤ 5 |
+| | Check extension (1 ply) |
+| | Futility pruning at depth 1–2 |
+| | Delta pruning in quiescence search |
 | | Quiescence search |
 | **Move ordering** | MVV-LVA capture ordering |
 | | Killer move heuristic (2 per ply) |
@@ -116,6 +128,8 @@ Uses [bulletchess](https://github.com/zedeckj/bulletchess) for fast board repres
 | | Separate MG/EG material values |
 | | Pawn structure — phase-weighted (doubled, isolated, rank-scaled passed) |
 | | King safety — phase-weighted (pawn shield, open files, pawn storm) |
+| | Rook on open / semi-open file bonus |
+| | Rook on 7th rank bonus |
 | | Bishop pair bonus |
 | | Mobility |
 | | Two-tier eval (full PESTO at quiescence entry, fast PST-only inside quiescence) |
@@ -193,10 +207,11 @@ Ranked by estimated Elo gain per implementation effort. _Both engines_ unless no
 
 ### Tier 1 — Quick wins (~1–2h each, high return)
 
-- [x] **Late Move Reduction (LMR)** — Quiet, non-killer, non-check moves after index 2 get depth-1 or depth-2 reduction with re-search on fail-high. _Both engines._
-- [ ] **Futility Pruning** — At depth 1, if `static_eval + 200 <= alpha`, skip the move entirely. ~5 lines, est. +25 Elo. _Both engines._
-- [ ] **Principal Variation Search (PVS)** — After the first move, search with null window `(-alpha-1, -alpha)` and re-search full window only on fail-high. Pairs naturally with LMR. Est. +25 Elo. _Both engines._
-- [ ] **Delta Pruning in Quiescence** — Skip captures where `stand_pat + piece_value + margin <= alpha`. Prunes useless captures cheaply. Est. +10 Elo. _Both engines._
+- [x] **Late Move Reduction (LMR)** — Depth-aware reductions (1–3 ply) for quiet, non-killer, non-check moves after index 2; re-search on fail-high. _Both engines._
+- [x] **Principal Variation Search (PVS)** — After the first move, search with null window `(-alpha-1, -alpha)` and re-search full window only on fail-high. _Both engines._
+- [x] **Reverse Futility Pruning (RFP)** — At depth ≤ 5, if `static_eval - 200×depth >= beta`, cut off immediately. _Both engines._
+- [x] **Futility Pruning** — At depth 1–2, skip quiet moves where `static_eval + margin <= alpha` (check-giving moves excluded). _Both engines._
+- [x] **Delta Pruning in Quiescence** — Skip captures where `stand_pat + piece_value + 200 <= alpha`. _Both engines._
 - [ ] **Endgame King PST** — Add a second king table where the king centralizes; swap based on remaining material. Est. +20 Elo. _Both engines._
 
 ### Tier 2 — Evaluation improvements (~1–3h each)
@@ -205,8 +220,8 @@ Ranked by estimated Elo gain per implementation effort. _Both engines_ unless no
 - [x] **Passed pawn rank scaling** — Bonuses now scale with advancement rank: `MG [0,5,10,20,35,55,80,0]`, `EG [0,15,25,50,80,125,175,0]`. _Both engines._
 - [x] **Gate king safety on game phase** — King safety penalties scale by `phase/24`; fade to zero in endgames where the king EG PST takes over. _Both engines._
 - [x] **Endgame King PST** — Dedicated EG king table rewards centralization; blended via tapered eval. _Both engines._
-- [ ] **Rook on open / semi-open file** — Rook with no friendly pawns on its file: +15 (open), +10 (semi-open). Est. +25 Elo. _Both engines._
-- [ ] **Rook on 7th rank** — +20 bonus per rook on rank 7 (rank 2 for Black). Est. +10 Elo. _Both engines._
+- [x] **Rook on open / semi-open file** — +20 (open), +10 (semi-open). _Both engines._
+- [x] **Rook on 7th rank** — +20 bonus per rook on rank 7 (rank 2 for Black). _Both engines._
 - [ ] **Two-sided mobility** — Currently only the side-to-move's legal move count is used. Differencing both sides gives a more accurate positional bonus. _Both engines._
 
 ### Tier 2 — Search improvements
