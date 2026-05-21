@@ -1,0 +1,8 @@
+data/
+checkpoints/
+*.bin
+*.nnue
+*.pt
+*.zst
+__pycache__/
+.venv/
