@@ -183,10 +183,13 @@ for _i in range(6):
     _B_MG.append([_mgv + _mg_pst[MIRROR[sq]] for sq in range(64)])
     _B_EG.append([_egv + _eg_pst[MIRROR[sq]] for sq in range(64)])
 
+TT_EXACT, TT_LOWER, TT_UPPER = 0, 1, 2
+
 TRANSPOSITION_TABLE = {}
 killer_moves = [[None, None] for _ in range(MAX_PLY)]
 history_heuristic = [[0] * 64 for _ in range(64)]
 game_position_keys: list[int] = []
+_nodes = [0]  # node counter for time-check throttling
 
 
 def position_key(board: Board) -> int:
@@ -202,6 +205,7 @@ def reset_search_state():
     killer_moves = [[None, None] for _ in range(MAX_PLY)]
     history_heuristic = [[0] * 64 for _ in range(64)]
     TRANSPOSITION_TABLE.clear()
+    _nodes[0] = 0
 
 
 def tt_lookup(board, depth, alpha, beta):
@@ -209,11 +213,11 @@ def tt_lookup(board, depth, alpha, beta):
     if key in TRANSPOSITION_TABLE:
         stored_depth, value, flag = TRANSPOSITION_TABLE[key]
         if stored_depth >= depth:
-            if flag == "EXACT":
+            if flag == TT_EXACT:
                 return value
-            elif flag == "LOWERBOUND" and value > alpha:
+            elif flag == TT_LOWER and value > alpha:
                 alpha = value
-            elif flag == "UPPERBOUND" and value < beta:
+            elif flag == TT_UPPER and value < beta:
                 beta = value
             if alpha >= beta:
                 return value
@@ -223,11 +227,11 @@ def tt_lookup(board, depth, alpha, beta):
 def tt_store(board, depth, value, alpha, beta):
     key = board.__hash__()
     if value <= alpha:
-        flag = "UPPERBOUND"
+        flag = TT_UPPER
     elif value >= beta:
-        flag = "LOWERBOUND"
+        flag = TT_LOWER
     else:
-        flag = "EXACT"
+        flag = TT_EXACT
     TRANSPOSITION_TABLE[key] = (depth, value, flag)
 
 
@@ -499,7 +503,8 @@ def quiesce(board, alpha, beta, ply_from_root, legal_moves=None, stand_pat=None)
 
 
 def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, rep_counts=None):
-    if time.time() - start_time > time_limit:
+    _nodes[0] += 1
+    if _nodes[0] & 2047 == 0 and time.time() - start_time > time_limit:
         return None
 
     legal_moves = list(board.legal_moves())

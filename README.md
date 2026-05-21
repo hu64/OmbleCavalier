@@ -232,6 +232,7 @@ Ranked by estimated Elo gain per implementation effort. _Both engines_ unless no
 
 ### Tier 3 — Larger effort
 
+- [ ] **Cython compilation for Python engine** — Rename `omble_cavalier.py` to `.pyx`, add `cdef int` type annotations for hot locals in `evaluate_board_fast` and `negamax`, and add a `setup.py` build step + update the PyInstaller `.spec`. Expected 3–10× speedup on the pure-Python portions (eval arithmetic, TT access, search overhead). _Python only._
 - [ ] **Syzygy Tablebase direct integration** — Engine-side probe for ≤7-piece positions for instant WDL+DTZ. Online EGTB already configured in lichess-bot. Est. +50–100 Elo in endgames. _Both engines._
 - [ ] **Native null move** — Current FEN-string flip works but allocates a new Board on every null move attempt. Investigate bulletchess internals or a workaround. _Python only._
 - [ ] **Pawn hash table** — Cache pawn structure scores independently of the main TT. _Both engines._
