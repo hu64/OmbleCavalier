@@ -414,6 +414,15 @@ def evaluate_board_full(board, legal_moves_count):
     score += rook_open_file_bonus(board, WHITE)
     score -= rook_open_file_bonus(board, BLACK)
 
+    # Rooks on 7th rank (strong attacking position)
+    sq_map = SQ_TO_INT
+    for sq in board[WHITE, PIECE_TYPES[3]]:
+        if sq_map[sq] // 8 == 6:
+            score += 20
+    for sq in board[BLACK, PIECE_TYPES[3]]:
+        if sq_map[sq] // 8 == 1:
+            score -= 20
+
     score += legal_moves_count * 5 if board.turn == WHITE else -legal_moves_count * 5
     return score if board.turn == WHITE else -score
 
@@ -471,6 +480,10 @@ def quiesce(board, alpha, beta, ply_from_root, legal_moves=None, stand_pat=None)
     for move in legal_moves:
         if not move.is_capture(board):
             continue
+        # Delta pruning: skip captures that can't improve alpha even with a safety margin
+        captured_val = get_piece_value(board, move.destination)
+        if captured_val > 0 and stand_pat + captured_val + 200 <= alpha:
+            continue
         board.apply(move)
         score = -quiesce(board, -beta, -alpha, ply_from_root + 1)
         board.undo()
@@ -513,6 +526,13 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, 
     in_check = board in CHECK
     extension = 1 if in_check else 0
 
+    # Reverse Futility Pruning: if static eval is strongly above beta, cut off early.
+    # Use a larger margin (200/depth) to avoid false cuts in tactical positions.
+    if depth <= 5 and not in_check:
+        rfp_eval = evaluate_board_fast(board, len(legal_moves))
+        if rfp_eval - 200 * depth >= beta:
+            return rfp_eval
+
     # Null move pruning (copy + attribute mutation avoids slow FEN roundtrip)
     if depth >= 3 and not in_check:
         non_pawn_material = (
@@ -533,9 +553,9 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, 
     best_score = float("-inf")
     move_idx = 0
 
-    # Futility pruning: at depth 1, skip quiet moves that can't raise alpha
-    FUTILITY_MARGIN = 300
-    can_futility_prune = depth == 1 and not in_check
+    # Futility pruning: at depth 1-2, skip quiet moves that can't raise alpha
+    FUTILITY_MARGINS = (0, 300, 600)
+    can_futility_prune = depth <= 2 and not in_check
     static_eval = evaluate_board_full(board, len(legal_moves)) if can_futility_prune else None
 
     if rep_counts is not None:
@@ -548,7 +568,7 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, 
                 move == killer_moves[ply_from_root][0] or move == killer_moves[ply_from_root][1]
             )
 
-            if can_futility_prune and not is_capture and not is_killer and static_eval + FUTILITY_MARGIN < alpha:
+            if can_futility_prune and not is_capture and not is_killer and static_eval + FUTILITY_MARGINS[depth] < alpha:
                 move_idx += 1
                 continue
 
@@ -557,12 +577,21 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, 
 
             # Late Move Reduction: quiet, non-killer, non-check moves after the first few
             if not in_check and depth >= 3 and move_idx >= 2 and not is_capture and not is_killer and not gives_check:
-                reduction = 1 + (1 if move_idx >= 6 else 0)
+                reduction = 1 + (1 if depth > 5 else 0) + (1 if move_idx >= 6 else 0)
                 score = negamax(board, depth - 1 + extension - reduction, -alpha - 1, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
                 if score is not None:
                     score = -score
                     if score > alpha:
                         # Fail-high on reduced search: re-search at full depth
+                        score = negamax(board, depth - 1 + extension, -beta, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
+                        if score is not None:
+                            score = -score
+            elif move_idx > 0:
+                # PVS: null window for non-first non-LMR moves, re-search only on fail-high
+                score = negamax(board, depth - 1 + extension, -alpha - 1, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
+                if score is not None:
+                    score = -score
+                    if score > alpha:
                         score = negamax(board, depth - 1 + extension, -beta, -alpha, start_time, time_limit, ply_from_root + 1, rep_counts)
                         if score is not None:
                             score = -score

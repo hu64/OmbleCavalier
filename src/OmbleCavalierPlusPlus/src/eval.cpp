@@ -268,6 +268,14 @@ int evaluateBoard(const Board &board, int plyFromRoot, Movelist &moves)
     score += rookOpenFileBonus(board, Color::WHITE);
     score -= rookOpenFileBonus(board, Color::BLACK);
 
+    // Rooks on 7th rank (strong attacking position)
+    {
+        chess::Bitboard wr7 = board.pieces(PieceType::ROOK, Color::WHITE);
+        while (wr7) { int sq = wr7.lsb(); wr7.clear(sq); if (sq / 8 == 6) score += 20; }
+        chess::Bitboard br2 = board.pieces(PieceType::ROOK, Color::BLACK);
+        while (br2) { int sq = br2.lsb(); br2.clear(sq); if (sq / 8 == 1) score -= 20; }
+    }
+
     // Mobility (side to move only)
     score += (board.sideToMove() == Color::WHITE ? 1 : -1) * (int(moves.size()) * 5);
 

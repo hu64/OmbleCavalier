@@ -40,6 +40,11 @@ int quiesce(Board &board, int alpha, int beta, int plyFromRoot)
         if (!board.isCapture(move))
             continue;
 
+        // Delta pruning: skip captures that can't improve alpha even with a safety margin
+        int capturedVal = getPieceValue(board, move.to());
+        if (capturedVal > 0 && stand_pat + capturedVal + 200 <= alpha)
+            continue;
+
         board.makeMove(move);
         int score = -quiesce(board, -beta, -alpha, plyFromRoot + 1);
         board.unmakeMove(move);
@@ -88,6 +93,16 @@ int negamax(Board &board, int depth, int alpha, int beta,
     if (depth <= 0)
         return quiesce(board, alpha, beta, plyFromRoot + 1);
 
+    // Reverse Futility Pruning: if static eval is strongly above beta, cut off early.
+    // Use a larger margin (200/depth) so we only prune when clearly dominating —
+    // avoids false cuts in tactical positions where static eval underestimates resources.
+    if (depth <= 5 && !inCheck)
+    {
+        int rfpEval = evaluateBoard(board, plyFromRoot, legalMoves);
+        if (rfpEval - 200 * depth >= beta)
+            return rfpEval;
+    }
+
     // Null move pruning
     if (depth >= 3 && !inCheck)
     {
@@ -116,9 +131,9 @@ int negamax(Board &board, int depth, int alpha, int beta,
         std::vector<Move>{killerMoves[plyFromRoot][0], killerMoves[plyFromRoot][1]},
         historyHeuristic);
 
-    // Futility pruning: at depth 1, skip quiet moves that can't raise alpha
-    static const int FUTILITY_MARGIN = 300;
-    bool canFutilityPrune = depth == 1 && !inCheck;
+    // Futility pruning: at depth 1-2, skip quiet moves that can't raise alpha
+    static const int FUTILITY_MARGINS[3] = { 0, 300, 600 };
+    bool canFutilityPrune = depth <= 2 && !inCheck;
     int staticEval = canFutilityPrune ? evaluateBoard(board, plyFromRoot, legalMoves) : INT_MIN;
 
     int moveIdx = 0;
@@ -127,8 +142,9 @@ int negamax(Board &board, int depth, int alpha, int beta,
         bool isCapture = board.isCapture(move);
         bool isKiller = plyFromRoot < MAX_PLY &&
                         (move == killerMoves[plyFromRoot][0] || move == killerMoves[plyFromRoot][1]);
+        bool isGivingCheck = canFutilityPrune && board.givesCheck(move) != chess::CheckType::NO_CHECK;
 
-        if (canFutilityPrune && !isCapture && !isKiller && staticEval + FUTILITY_MARGIN < alpha)
+        if (canFutilityPrune && !isCapture && !isKiller && !isGivingCheck && staticEval + FUTILITY_MARGINS[depth] < alpha)
         {
             moveIdx++;
             continue;
@@ -141,8 +157,15 @@ int negamax(Board &board, int depth, int alpha, int beta,
         // Late Move Reduction: reduce quiet, non-killer, non-check moves after the first few
         if (!inCheck && depth >= 3 && moveIdx >= 2 && !isCapture && !isKiller && !givesCheck)
         {
-            int reduction = 1 + (moveIdx >= 6 ? 1 : 0); // reduce more for very late moves
+            int reduction = 1 + (depth > 5 ? 1 : 0) + (moveIdx >= 6 ? 1 : 0);
             score = -negamax(board, depth - 1 + extension - reduction, -alpha - 1, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
+            if (!timedOut && score > alpha)
+                score = -negamax(board, depth - 1 + extension, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
+        }
+        else if (moveIdx > 0)
+        {
+            // PVS: null window for non-first non-LMR moves, re-search only on fail-high
+            score = -negamax(board, depth - 1 + extension, -alpha - 1, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
             if (!timedOut && score > alpha)
                 score = -negamax(board, depth - 1 + extension, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
         }
