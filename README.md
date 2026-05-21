@@ -223,17 +223,34 @@ Ranked by estimated Elo gain per implementation effort. _Both engines_ unless no
 - [x] **Rook on open / semi-open file** — +20 (open), +10 (semi-open). _Both engines._
 - [x] **Rook on 7th rank** — +20 bonus per rook on rank 7 (rank 2 for Black). _Both engines._
 - [ ] **Two-sided mobility** — Currently only the side-to-move's legal move count is used. Differencing both sides gives a more accurate positional bonus. _Both engines._
+- [ ] **Backward pawn penalty** — Penalise pawns with advanced neighbours but no rear support on adjacent files; fills the last gap in pawn structure eval. Est. +5–10 Elo. _Both engines._
+- [ ] **Connected rooks bonus** — Reward rooks that share a rank/file with no pieces between them (+8 cp each). _Both engines._
+- [ ] **Attack-unit king safety** — Replace the current pawn-shield heuristic with a weighted attacker-count scale (0–63 danger units); each piece type attacking the king zone adds a type-specific danger score mapped through a non-linear penalty table. Est. +15–25 Elo. _Both engines._
+- [ ] **Texel tuning** — Run gradient-descent tuning on a large self-play or annotated position set to optimise all evaluation weights simultaneously instead of hand-tuning. Est. +30–60 Elo. _Both engines._
+- [ ] **Mop-up evaluation** — For elementary K+R/Q vs K positions, add a bonus proportional to how close the losing king is to the corner and how close the winning king is to the losing king; prevents aimless shuffling. _Both engines._
 
 ### Tier 2 — Search improvements
 
-- [ ] **SEE (Static Exchange Evaluation)** — Replace MVV-LVA with a full capture-sequence simulation to determine if a trade is winning or losing. Est. +20 Elo. _Both engines._
+- [ ] **SEE (Static Exchange Evaluation)** — Simulate full capture sequences to score exchanges; use for capture ordering in quiescence and to skip losing captures entirely. Est. +20 Elo. _Both engines._
+- [ ] **Internal Iterative Deepening (IID)** — When the TT has no hash move at depth ≥ 4, run a shallower search first to find one; improves move ordering cheaply. Est. +10–15 Elo. _Both engines._
+- [ ] **Razoring** — At depth 1–3, if `static_eval + margin ≤ alpha`, drop directly into quiescence rather than searching further. Est. +10 Elo. _Both engines._
+- [ ] **Adaptive LMR** — Scale reductions by history score and move characteristics (capture vs quiet, killer vs non-killer) instead of the current fixed depth/index formula. Est. +10–20 Elo. _Both engines._
+- [ ] **Improved aspiration windows** — Use pre-tuned step sequences (±30 → ±130 → ±530 → ∞) instead of simple doubling on fail; reduces costly re-searches on sharp positions. _Both engines._
+- [ ] **TT aging / generation counter** — Maintain a global generation counter incremented each `ucinewgame`; prefer replacing entries from older generations over deeper ones so stale lines do not pollute fresh searches. _C++ engine._
+- [ ] **Countermove heuristic** — Index a quiet move that caused a beta-cutoff by the previous opponent move; score it just below killer moves in ordering. Est. +5–10 Elo. _Both engines._
+- [ ] **Continuation history tables** — Extend the history heuristic to 2-ply pairs `(prev_move, cur_move)` for finer-grained ordering of quiet moves. _Both engines._
+- [ ] **Staged / lazy move generation** — Generate captures first and only produce quiet moves if no early cutoff is found; avoids the full move-gen cost when a capture scores above beta. _C++ engine._
+- [ ] **Null move verification search** — After a null-move cutoff, verify with a reduced search in suspected zugzwang positions (pawn-only endgames) to avoid missing key defensive moves. _Both engines._
 - [ ] **Repetition detection** — Track Zobrist hashes in a stack through the search; detect 3-fold repetition explicitly. `bulletchess DRAW` may miss mid-search repetitions. _Python only._
-- [ ] **Countermove Heuristic** — Store the move causing a beta cutoff indexed by the previous move; give it a bonus in ordering just below killers. Est. +5 Elo. _Both engines._
 
 ### Tier 3 — Larger effort
 
-- [ ] **Cython compilation for Python engine** — Rename `omble_cavalier.py` to `.pyx`, add `cdef int` type annotations for hot locals in `evaluate_board_fast` and `negamax`, and add a `setup.py` build step + update the PyInstaller `.spec`. Expected 3–10× speedup on the pure-Python portions (eval arithmetic, TT access, search overhead). _Python only._
+- [ ] **Singular extensions** — Detect when one move is singularly better than all alternatives (re-search with reduced beta); extend that move's search by 1 ply. Est. +20–30 Elo. _C++ engine._
+- [ ] **Pondering (think on opponent's time)** — Support `go ponder` / `ponderhit` / `pondermiss`; keep searching the expected reply during the opponent's clock and hit the ground running if the prediction is correct. _Both engines._
+- [ ] **Lazy SMP (multi-threaded search)** — Spin up N threads each running independent searches with shared TT; near-linear scaling up to ~8 threads with minimal synchronisation overhead. _C++ engine._
+- [ ] **Endgame bitbases (KPK / KBNK / KBBK)** — Compile small perfect-play bitbases for common 3-4 piece endings; probe them in the search instead of relying on evaluation heuristics. _Both engines._
 - [ ] **Syzygy Tablebase direct integration** — Engine-side probe for ≤7-piece positions for instant WDL+DTZ. Online EGTB already configured in lichess-bot. Est. +50–100 Elo in endgames. _Both engines._
+- [ ] **Cython compilation for Python engine** — Rename `omble_cavalier.py` to `.pyx`, add `cdef int` type annotations for hot locals in `evaluate_board_fast` and `negamax`, and add a `setup.py` build step + update the PyInstaller `.spec`. Expected 3–10× speedup on the pure-Python portions (eval arithmetic, TT access, search overhead). _Python only._
 - [ ] **Native null move** — Current FEN-string flip works but allocates a new Board on every null move attempt. Investigate bulletchess internals or a workaround. _Python only._
 - [ ] **Pawn hash table** — Cache pawn structure scores independently of the main TT. _Both engines._
 - [ ] **Multi-PV output** — Report multiple best lines for analysis mode. _Both engines._
