@@ -1,4 +1,5 @@
 #include "eval.hpp"
+#include "nnue.hpp"
 #include "utils.hpp"
 using namespace chess;
 
@@ -214,6 +215,9 @@ int evaluateBoard(const Board &board, int plyFromRoot, Movelist &moves)
 {
     if (moves.empty())
         return board.inCheck() ? (-MATE_SCORE + plyFromRoot) : 0;
+
+    if (nnue_loaded())
+        return nnue_eval(board);
 
     int phase = gamePhase(board);
 

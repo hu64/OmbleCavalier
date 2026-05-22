@@ -24,6 +24,7 @@ add_executable(omble_cavalier++
     src/main.cpp
     src/search.cpp
     src/eval.cpp
+    src/nnue.cpp
     src/tt.cpp
     src/book.cpp
     src/utils.cpp

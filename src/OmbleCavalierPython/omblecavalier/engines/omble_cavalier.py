@@ -17,6 +17,8 @@ from bulletchess import (
     Move,
 )
 
+import nnue as _nnue
+
 logging.basicConfig(level=logging.DEBUG)
 
 # Square index mapping: Square object -> int (a1=0, h8=63)
@@ -392,7 +394,11 @@ def evaluate_board_fast(board, legal_moves_count):
 
 
 def evaluate_board_full(board, legal_moves_count):
-    """Full PESTO evaluation: tapered material/PST + pawn structure + king safety."""
+    """Full evaluation: NNUE when loaded, otherwise full PESTO (tapered + structure + safety)."""
+    nnue_score = _nnue.eval_cp(board)
+    if nnue_score is not None:
+        return nnue_score
+
     sq_map = SQ_TO_INT
     phase = _compute_phase(board)
     mg, eg = 0, 0
@@ -777,6 +783,8 @@ def main():
             if line == "uci":
                 print("id name OmbleCavalier")
                 print("id author Hughes Perreault")
+                eval_mode = "NNUE" if _nnue.is_loaded() else "HCE"
+                print(f"info string eval={eval_mode}")
                 print("uciok")
                 sys.stdout.flush()
 

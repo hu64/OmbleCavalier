@@ -5,6 +5,7 @@
 #include "book.hpp"
 #include "search.hpp"
 #include "eval.hpp"
+#include "nnue.hpp"
 using namespace chess;
 
 void benchmarking()
@@ -55,6 +56,16 @@ int main(int argc, char *argv[])
         return result ? 0 : 1; // Return success (0) only if test passes
     }
 
+    // Try loading NNUE weights from standard locations
+    for (const std::string &p : {
+            std::string("omblecavalier.nnue"),
+            std::string("../../src/nnue-training/omblecavalier.nnue"),
+            std::string("../../../src/nnue-training/omblecavalier.nnue"),
+         })
+    {
+        if (nnue_load(p)) break;
+    }
+
     Board board;
     std::string line;
 
@@ -64,6 +75,7 @@ int main(int argc, char *argv[])
         {
             std::cout << "id name OmbleCavalierCPP\n";
             std::cout << "id author Hughes Perreault\n";
+            std::cout << "info string eval=" << (nnue_loaded() ? "NNUE" : "HCE") << "\n";
             std::cout << "uciok\n";
         }
         else if (line == "isready")
