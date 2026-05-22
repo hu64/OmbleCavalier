@@ -141,15 +141,20 @@ Uses [bulletchess](https://github.com/zedeckj/bulletchess) for fast board repres
 
 ### Environment setup
 
-The project uses [uv](https://github.com/astral-sh/uv) for dependency management from the repo root.
+The project uses [uv](https://github.com/astral-sh/uv) for dependency management.
 
 ```bash
 # Install uv if needed
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Install all dependencies (from repo root)
+# Runtime deps (engine + bot)
 uv sync
+
+# Runtime + dev deps (pytest, pyinstaller, snakeviz, cython)
+uv sync --group dev
 ```
+
+The NNUE training pipeline (`src/nnue-training/`) is a separate project with its own venv — PyTorch stays out of the engine runtime. Run all training commands with `uv run` from inside `src/nnue-training/`.
 
 ### Run (standalone UCI)
 
@@ -179,6 +184,73 @@ uv run pytest src/OmbleCavalierPython/tests/ -v
 uv run pyinstaller --onefile \
   --distpath engines \
   src/OmbleCavalierPython/omblecavalier/engines/omble_cavalier.py
+```
+
+---
+
+## 🧠 NNUE Training
+
+Both engines are being extended with a [NNUE](https://www.chessprogramming.org/NNUE) evaluation layer trained on Lichess position evaluations. The training pipeline lives in `src/nnue-training/` as a self-contained project with its own virtual environment — PyTorch is not a runtime dependency of either engine.
+
+### Network architecture
+
+`768 → 256 → 32 → 1` with ClippedReLU activations. Input is a 768-bit binary feature vector (12 piece types × 64 squares, from side-to-move perspective). Output is a win-probability logit; converted to centipawns via `400 × log(p / (1−p))`.
+
+### Pipeline
+
+```
+prepare_data.py  →  positions.bin  →  train.py  →  best.pt  →  export.py  →  omblecavalier.nnue
+```
+
+**1. Prepare data** — streams `lichess_db_eval.jsonl.zst` ([download from database.lichess.org](https://database.lichess.org/#evals), ~10 GB) and writes binary position records:
+
+```bash
+cd src/nnue-training
+uv run python prepare_data.py \
+    --input  /path/to/lichess_db_eval.jsonl.zst \
+    --output data/positions.bin \
+    --max-positions 10_000_000 --min-depth 12
+```
+
+**2. Train** — 96/2/2% train/val/test split, early stopping (patience 5 epochs by default), MLflow tracking. GPU (CUDA or MPS) is used automatically when available:
+
+```bash
+uv run python train.py \
+    --data    data/positions.bin \
+    --out     checkpoints/ \
+    --epochs  20 \
+    --batch   16384
+```
+
+**3. Export** — converts `best.pt` to a portable `.nnue` binary (magic header + float32 weights):
+
+```bash
+uv run python export.py --model checkpoints/best.pt --output omblecavalier.nnue
+```
+
+**4. Validate** — sanity-checks win-probabilities on reference positions (starting position ≈ 0.5, clearly winning ≥ 0.65, clearly losing ≤ 0.35):
+
+```bash
+uv run python validate.py --model omblecavalier.nnue
+```
+
+### Visualise training
+
+```bash
+cd src/nnue-training
+mlflow ui        # opens http://localhost:5000
+```
+
+Shows train loss (per step), val loss + accuracy (per epoch), and final test metrics across all runs.
+
+### Training data
+
+`data/positions.bin` (~7.5 GB for 10 M positions) is tracked via git-lfs. Install git-lfs before pulling it:
+
+```bash
+brew install git-lfs   # macOS
+git lfs install
+git lfs pull
 ```
 
 ---
@@ -245,6 +317,8 @@ Ranked by estimated Elo gain per implementation effort. _Both engines_ unless no
 
 ### Tier 3 — Larger effort
 
+- [ ] **NNUE evaluation (Python engine)** — load `omblecavalier.nnue`, expose `eval_cp(fen)` via `nnue.py`, replace `evaluateBoard` with NNUE; fall back to HCE when no `.nnue` file is present. Est. +100–200 Elo. _Python only._
+- [ ] **NNUE evaluation (C++ engine)** — load `.nnue` binary in `nnue.cpp`, implement forward pass 768→256→32→1 with ClippedReLU, replace `evaluateBoard()` with NNUE; HCE fallback. Add `nnue.cpp` to CMakeLists. Est. +100–200 Elo. _C++ only._
 - [ ] **Singular extensions** — Detect when one move is singularly better than all alternatives (re-search with reduced beta); extend that move's search by 1 ply. Est. +20–30 Elo. _C++ engine._
 - [ ] **Pondering (think on opponent's time)** — Support `go ponder` / `ponderhit` / `pondermiss`; keep searching the expected reply during the opponent's clock and hit the ground running if the prediction is correct. _Both engines._
 - [ ] **Lazy SMP (multi-threaded search)** — Spin up N threads each running independent searches with shared TT; near-linear scaling up to ~8 threads with minimal synchronisation overhead. _C++ engine._
