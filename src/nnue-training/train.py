@@ -14,6 +14,13 @@ Typical run
 
 Tracks every metric with MLflow — run `mlflow ui` in this directory to open
 the dashboard. Early stopping halts training when val loss stops improving.
+
+Memory note
+───────────
+The training split uses StreamingPositionDataset: sequential I/O + a fixed
+shuffle buffer. Memory usage is O(--shuffle-buffer), not O(file size).
+num_workers=0 is intentional — multiple workers each re-map the full file,
+which was the source of 90+ GB memory use with the previous approach.
 """
 import argparse
 import os
@@ -23,9 +30,9 @@ from pathlib import Path
 import mlflow
 import torch
 import torch.nn as nn
-from torch.utils.data import DataLoader, random_split
+from torch.utils.data import DataLoader
 
-from dataset import PositionDataset
+from dataset import PositionDataset, StreamingPositionDataset, record_count
 from model import NNUE
 
 # Win-probability thresholds for 3-class outcome accuracy
@@ -41,15 +48,25 @@ def _pick_device() -> torch.device:
     return torch.device("cpu")
 
 
-def _make_loader(dataset, batch_size: int, shuffle: bool, device: torch.device) -> DataLoader:
+def _make_loader(dataset, batch_size: int, device: torch.device) -> DataLoader:
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=min(4, os.cpu_count() or 1),
+        # shuffle=False for both: StreamingPositionDataset shuffles internally;
+        # PositionDataset (val/test) doesn't need shuffling.
+        shuffle=False,
+        # num_workers=0: each worker re-maps the full file, which was the
+        # cause of 90+ GB RAM use. Sequential streaming makes workers pointless.
+        num_workers=0,
         pin_memory=(device.type == "cuda"),
-        persistent_workers=True,
     )
+
+
+def _empty_cache(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    elif device.type == "mps":
+        torch.mps.empty_cache()
 
 
 def _outcome_accuracy(preds: torch.Tensor, targets: torch.Tensor) -> float:
@@ -87,26 +104,34 @@ def train(
     val_fraction: float,
     test_fraction: float,
     patience: int,
+    shuffle_buffer: int,
 ) -> None:
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     device = _pick_device()
     print(f"Device : {device}")
 
-    # ── Data splits ───────────────────────────────────────────────────────
-    full_dataset = PositionDataset(data_path)
-    n_test  = max(1, int(len(full_dataset) * test_fraction))
-    n_val   = max(1, int(len(full_dataset) * val_fraction))
-    n_train = len(full_dataset) - n_val - n_test
-    train_ds, val_ds, test_ds = random_split(
-        full_dataset,
-        [n_train, n_val, n_test],
-        generator=torch.Generator().manual_seed(42),
-    )
+    # ── Data splits (contiguous byte ranges — no full-file random access) ─
+    n_total = record_count(data_path)
+    n_test  = max(1, int(n_total * test_fraction))
+    n_val   = max(1, int(n_total * val_fraction))
+    n_train = n_total - n_val - n_test
+    # Layout: [0, n_train) train | [n_train, n_train+n_val) val | rest test
+    val_start  = n_train
+    test_start = n_train + n_val
     print(f"Dataset: {n_train:,} train  |  {n_val:,} val  |  {n_test:,} test")
+    print(f"Shuffle buffer: {shuffle_buffer:,} positions "
+          f"({shuffle_buffer * 772 / 1e6:.0f} MB)")
 
-    train_loader = _make_loader(train_ds, batch_size, shuffle=True,  device=device)
-    val_loader   = _make_loader(val_ds,   batch_size, shuffle=False, device=device)
-    test_loader  = _make_loader(test_ds,  batch_size, shuffle=False, device=device)
+    train_ds = StreamingPositionDataset(
+        data_path, start=0, end=n_train,
+        buffer_size=shuffle_buffer, seed=42,
+    )
+    val_ds  = PositionDataset(data_path, start=val_start,  end=test_start)
+    test_ds = PositionDataset(data_path, start=test_start, end=n_total)
+
+    train_loader = _make_loader(train_ds, batch_size, device=device)
+    val_loader   = _make_loader(val_ds,   batch_size, device=device)
+    test_loader  = _make_loader(test_ds,  batch_size, device=device)
 
     model     = NNUE().to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
@@ -117,23 +142,25 @@ def train(
 
     best_val_loss     = float("inf")
     epochs_no_improve = 0
-    log_interval      = max(1, len(train_loader) // 20)
+    steps_per_epoch   = (n_train + batch_size - 1) // batch_size
+    log_interval      = max(1, steps_per_epoch // 20)
 
     mlflow.set_experiment("nnue-training")
     with mlflow.start_run():
         mlflow.log_params({
-            "epochs_max":    epochs,
-            "batch_size":    batch_size,
-            "lr":            lr,
-            "weight_decay":  weight_decay,
-            "grad_clip":     grad_clip,
-            "val_fraction":  val_fraction,
-            "test_fraction": test_fraction,
-            "patience":      patience,
-            "device":        str(device),
-            "n_train":       n_train,
-            "n_val":         n_val,
-            "n_test":        n_test,
+            "epochs_max":     epochs,
+            "batch_size":     batch_size,
+            "lr":             lr,
+            "weight_decay":   weight_decay,
+            "grad_clip":      grad_clip,
+            "val_fraction":   val_fraction,
+            "test_fraction":  test_fraction,
+            "patience":       patience,
+            "shuffle_buffer": shuffle_buffer,
+            "device":         str(device),
+            "n_train":        n_train,
+            "n_val":          n_val,
+            "n_test":         n_test,
         })
 
         global_step = 0
@@ -161,11 +188,11 @@ def train(
                 global_step  += 1
 
                 if step % log_interval == 0:
-                    avg     = running_loss / log_interval
-                    elapsed = time.time() - t0
+                    avg       = running_loss / log_interval
+                    elapsed   = time.time() - t0
                     pos_per_s = step * batch_size / elapsed
                     print(
-                        f"Epoch {epoch}/{epochs}  step {step:>6}/{len(train_loader)}"
+                        f"Epoch {epoch}/{epochs}  step {step:>6}/{steps_per_epoch}"
                         f"  loss {avg:.6f}  lr {scheduler.get_last_lr()[0]:.2e}"
                         f"  {pos_per_s:,.0f} pos/s"
                     )
@@ -184,6 +211,8 @@ def train(
                 {"val_loss": val_loss, "val_accuracy": val_acc, "lr": scheduler.get_last_lr()[0]},
                 step=epoch,
             )
+
+            _empty_cache(device)
 
             # ── Checkpoint + early stopping ───────────────────────────────
             if val_loss < best_val_loss:
@@ -226,7 +255,8 @@ def main() -> None:
     parser.add_argument("--grad-clip",     type=float, default=1.0,      help="Gradient clip norm (default 1.0, 0=off)")
     parser.add_argument("--val-fraction",  type=float, default=0.02,     help="Val fraction (default 0.02)")
     parser.add_argument("--test-fraction", type=float, default=0.02,     help="Test fraction (default 0.02)")
-    parser.add_argument("--patience",      type=int,   default=5,        help="Early-stop patience in epochs (default 5)")
+    parser.add_argument("--patience",       type=int,   default=5,        help="Early-stop patience in epochs (default 5)")
+    parser.add_argument("--shuffle-buffer", type=int,   default=200_000,  help="Shuffle buffer size in positions (default 200000, ~150 MB)")
     args = parser.parse_args()
 
     train(
@@ -240,6 +270,7 @@ def main() -> None:
         val_fraction=args.val_fraction,
         test_fraction=args.test_fraction,
         patience=args.patience,
+        shuffle_buffer=args.shuffle_buffer,
     )
 
 
