@@ -9,23 +9,28 @@ Typical run
   python train.py \\
       --data  data/positions.bin \\
       --out   checkpoints/ \\
-      --epochs 3 \\
+      --epochs 20 \\
       --batch  16384
 
-The best model (lowest validation loss) is saved as checkpoints/best.pt.
-After training, run export.py to convert best.pt → a .nnue file.
+Tracks every metric with MLflow — run `mlflow ui` in this directory to open
+the dashboard. Early stopping halts training when val loss stops improving.
 """
 import argparse
 import os
 import time
 from pathlib import Path
 
+import mlflow
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 
 from dataset import PositionDataset
 from model import NNUE
+
+# Win-probability thresholds for 3-class outcome accuracy
+_WP_WIN  = 0.55
+_WP_LOSS = 0.45
 
 
 def _pick_device() -> torch.device:
@@ -42,11 +47,33 @@ def _make_loader(dataset, batch_size: int, shuffle: bool, device: torch.device) 
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=min(4, os.cpu_count() or 1),
-        # pin_memory only helps on CUDA; MPS uses unified memory so it's a no-op
-        # and can cause warnings on macOS
         pin_memory=(device.type == "cuda"),
         persistent_workers=True,
     )
+
+
+def _outcome_accuracy(preds: torch.Tensor, targets: torch.Tensor) -> float:
+    """% of positions where predicted outcome bucket matches target bucket."""
+    def bucket(t: torch.Tensor) -> torch.Tensor:
+        return torch.where(t > _WP_WIN, 2, torch.where(t < _WP_LOSS, 0, 1))
+    return (bucket(preds.squeeze(1)) == bucket(targets.squeeze(1))).float().mean().item()
+
+
+def _evaluate(model: nn.Module, loader: DataLoader, loss_fn, device: torch.device) -> tuple[float, float]:
+    model.eval()
+    total_loss = 0.0
+    total_correct = 0.0
+    total_samples = 0
+    with torch.no_grad():
+        for features, targets in loader:
+            features = features.to(device)
+            targets  = targets.to(device).unsqueeze(1)
+            preds    = torch.sigmoid(model(features))
+            total_loss += loss_fn(preds, targets).item()
+            b = features.size(0)
+            total_correct += _outcome_accuracy(preds, targets) * b
+            total_samples += b
+    return total_loss / len(loader), total_correct / total_samples
 
 
 def train(
@@ -55,101 +82,151 @@ def train(
     epochs: int,
     batch_size: int,
     lr: float,
+    weight_decay: float,
+    grad_clip: float,
     val_fraction: float,
+    test_fraction: float,
+    patience: int,
 ) -> None:
     Path(out_dir).mkdir(parents=True, exist_ok=True)
     device = _pick_device()
     print(f"Device : {device}")
 
+    # ── Data splits ───────────────────────────────────────────────────────
     full_dataset = PositionDataset(data_path)
-    n_val  = max(1, int(len(full_dataset) * val_fraction))
-    n_train = len(full_dataset) - n_val
-    train_ds, val_ds = random_split(
+    n_test  = max(1, int(len(full_dataset) * test_fraction))
+    n_val   = max(1, int(len(full_dataset) * val_fraction))
+    n_train = len(full_dataset) - n_val - n_test
+    train_ds, val_ds, test_ds = random_split(
         full_dataset,
-        [n_train, n_val],
+        [n_train, n_val, n_test],
         generator=torch.Generator().manual_seed(42),
     )
-    print(f"Dataset: {n_train:,} train  |  {n_val:,} val")
+    print(f"Dataset: {n_train:,} train  |  {n_val:,} val  |  {n_test:,} test")
 
     train_loader = _make_loader(train_ds, batch_size, shuffle=True,  device=device)
     val_loader   = _make_loader(val_ds,   batch_size, shuffle=False, device=device)
+    test_loader  = _make_loader(test_ds,  batch_size, shuffle=False, device=device)
 
     model     = NNUE().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=epochs * len(train_loader), eta_min=lr * 0.01
     )
     loss_fn = nn.MSELoss()
 
-    best_val_loss = float("inf")
-    log_interval  = max(1, len(train_loader) // 20)   # ~20 log lines per epoch
+    best_val_loss     = float("inf")
+    epochs_no_improve = 0
+    log_interval      = max(1, len(train_loader) // 20)
 
-    for epoch in range(1, epochs + 1):
-        # ── Training ────────────────────────────────────────────────────
-        model.train()
-        running_loss = 0.0
-        t0 = time.time()
+    mlflow.set_experiment("nnue-training")
+    with mlflow.start_run():
+        mlflow.log_params({
+            "epochs_max":    epochs,
+            "batch_size":    batch_size,
+            "lr":            lr,
+            "weight_decay":  weight_decay,
+            "grad_clip":     grad_clip,
+            "val_fraction":  val_fraction,
+            "test_fraction": test_fraction,
+            "patience":      patience,
+            "device":        str(device),
+            "n_train":       n_train,
+            "n_val":         n_val,
+            "n_test":        n_test,
+        })
 
-        for step, (features, targets) in enumerate(train_loader, 1):
-            features = features.to(device)
-            targets  = targets.to(device).unsqueeze(1)
+        global_step = 0
 
-            optimizer.zero_grad(set_to_none=True)
-            preds = torch.sigmoid(model(features))
-            loss  = loss_fn(preds, targets)
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
+        for epoch in range(1, epochs + 1):
+            # ── Training ──────────────────────────────────────────────────
+            model.train()
+            running_loss = 0.0
+            t0 = time.time()
 
-            running_loss += loss.item()
-
-            if step % log_interval == 0:
-                avg = running_loss / log_interval
-                elapsed = time.time() - t0
-                pos_per_s = step * batch_size / elapsed
-                print(
-                    f"Epoch {epoch}/{epochs}  step {step:>6}/{len(train_loader)}"
-                    f"  loss {avg:.6f}  lr {scheduler.get_last_lr()[0]:.2e}"
-                    f"  {pos_per_s:,.0f} pos/s"
-                )
-                running_loss = 0.0
-
-        # ── Validation ──────────────────────────────────────────────────
-        model.eval()
-        val_loss = 0.0
-        with torch.no_grad():
-            for features, targets in val_loader:
+            for step, (features, targets) in enumerate(train_loader, 1):
                 features = features.to(device)
                 targets  = targets.to(device).unsqueeze(1)
-                preds    = torch.sigmoid(model(features))
-                val_loss += loss_fn(preds, targets).item()
-        val_loss /= len(val_loader)
 
-        print(f"── Epoch {epoch} done  val_loss {val_loss:.6f}  ({time.time()-t0:.0f}s) ──")
+                optimizer.zero_grad(set_to_none=True)
+                preds = torch.sigmoid(model(features))
+                loss  = loss_fn(preds, targets)
+                loss.backward()
+                if grad_clip > 0:
+                    nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+                optimizer.step()
+                scheduler.step()
 
-        # Save checkpoint every epoch
-        ckpt_path = os.path.join(out_dir, f"nnue_epoch{epoch}.pt")
-        torch.save(model.state_dict(), ckpt_path)
+                running_loss += loss.item()
+                global_step  += 1
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_path = os.path.join(out_dir, "best.pt")
-            torch.save(model.state_dict(), best_path)
-            print(f"   ↳ New best  ({best_val_loss:.6f})  → {best_path}")
+                if step % log_interval == 0:
+                    avg     = running_loss / log_interval
+                    elapsed = time.time() - t0
+                    pos_per_s = step * batch_size / elapsed
+                    print(
+                        f"Epoch {epoch}/{epochs}  step {step:>6}/{len(train_loader)}"
+                        f"  loss {avg:.6f}  lr {scheduler.get_last_lr()[0]:.2e}"
+                        f"  {pos_per_s:,.0f} pos/s"
+                    )
+                    mlflow.log_metric("train_loss", avg, step=global_step)
+                    running_loss = 0.0
 
-    print(f"\nTraining complete.  Best val_loss: {best_val_loss:.6f}")
-    print(f"Best model: {os.path.join(out_dir, 'best.pt')}")
-    print("Next: python export.py --model checkpoints/best.pt --output omblecavalier.nnue")
+            # ── Validation ────────────────────────────────────────────────
+            val_loss, val_acc = _evaluate(model, val_loader, loss_fn, device)
+            elapsed = time.time() - t0
+            print(
+                f"── Epoch {epoch} done"
+                f"  val_loss {val_loss:.6f}  val_acc {val_acc:.4f}"
+                f"  ({elapsed:.0f}s) ──"
+            )
+            mlflow.log_metrics(
+                {"val_loss": val_loss, "val_accuracy": val_acc, "lr": scheduler.get_last_lr()[0]},
+                step=epoch,
+            )
+
+            # ── Checkpoint + early stopping ───────────────────────────────
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                epochs_no_improve = 0
+                best_path = os.path.join(out_dir, "best.pt")
+                torch.save(model.state_dict(), best_path)
+                print(f"   ↳ New best ({best_val_loss:.6f}) → {best_path}")
+                mlflow.log_metric("best_val_loss", best_val_loss, step=epoch)
+            else:
+                epochs_no_improve += 1
+                print(f"   ↳ No improvement {epochs_no_improve}/{patience}")
+                if epochs_no_improve >= patience:
+                    print(f"Early stopping at epoch {epoch}.")
+                    break
+
+        # ── Test set evaluation (always on best checkpoint) ───────────────
+        print("\nEvaluating held-out test set…")
+        model.load_state_dict(torch.load(
+            os.path.join(out_dir, "best.pt"), map_location=device, weights_only=True
+        ))
+        test_loss, test_acc = _evaluate(model, test_loader, loss_fn, device)
+        print(f"Test  loss {test_loss:.6f}  acc {test_acc:.4f}")
+        mlflow.log_metrics({"test_loss": test_loss, "test_accuracy": test_acc})
+
+        print(f"\nTraining complete.  Best val_loss: {best_val_loss:.6f}")
+        print(f"Best model : {os.path.join(out_dir, 'best.pt')}")
+        print("Next       : python export.py --model checkpoints/best.pt --output omblecavalier.nnue")
+        print("Visualise  : mlflow ui")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train NNUE model")
-    parser.add_argument("--data",   default="data/positions.bin", help="Training data binary")
-    parser.add_argument("--out",    default="checkpoints/",       help="Checkpoint directory")
-    parser.add_argument("--epochs", type=int,   default=3,        help="Epochs (default 3)")
-    parser.add_argument("--batch",  type=int,   default=16384,    help="Batch size (default 16384)")
-    parser.add_argument("--lr",     type=float, default=1e-3,     help="Initial learning rate (default 1e-3)")
-    parser.add_argument("--val-fraction", type=float, default=0.02, help="Fraction of data for validation (default 0.02)")
+    parser.add_argument("--data",          default="data/positions.bin", help="Training data binary")
+    parser.add_argument("--out",           default="checkpoints/",       help="Checkpoint directory")
+    parser.add_argument("--epochs",        type=int,   default=20,       help="Max epochs (default 20)")
+    parser.add_argument("--batch",         type=int,   default=16384,    help="Batch size (default 16384)")
+    parser.add_argument("--lr",            type=float, default=1e-3,     help="Initial LR (default 1e-3)")
+    parser.add_argument("--weight-decay",  type=float, default=1e-5,     help="L2 weight decay (default 1e-5)")
+    parser.add_argument("--grad-clip",     type=float, default=1.0,      help="Gradient clip norm (default 1.0, 0=off)")
+    parser.add_argument("--val-fraction",  type=float, default=0.02,     help="Val fraction (default 0.02)")
+    parser.add_argument("--test-fraction", type=float, default=0.02,     help="Test fraction (default 0.02)")
+    parser.add_argument("--patience",      type=int,   default=5,        help="Early-stop patience in epochs (default 5)")
     args = parser.parse_args()
 
     train(
@@ -158,7 +235,11 @@ def main() -> None:
         epochs=args.epochs,
         batch_size=args.batch,
         lr=args.lr,
+        weight_decay=args.weight_decay,
+        grad_clip=args.grad_clip,
         val_fraction=args.val_fraction,
+        test_fraction=args.test_fraction,
+        patience=args.patience,
     )
 
 
