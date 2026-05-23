@@ -12,6 +12,7 @@ lichess_bot_auto_logs/*
 !**/CMakeLists.txt
 TEMP/*
 build/*
+tests/engines/
 dist/*
 *.spec
 *.so
@@ -19,3 +20,6 @@ dist/*
 *.dylib
 *.o
 *.obj
+src/nnue-training/mlflow.db
+data/lichess_db_eval.jsonl.zst
+.DS_Store

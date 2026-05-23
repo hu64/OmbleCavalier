@@ -37,6 +37,12 @@ add_executable(test_pawnstructure
     src/utils.cpp
 )
 
+add_executable(test_nnue_features
+    src/test_nnue_features.cpp
+    src/nnue.cpp
+)
+add_test(NAME testNNUEFeatures COMMAND test_nnue_features)
+
 # Generate individual puzzle tests from shared puzzles.json
 set(PUZZLES_JSON "${CMAKE_SOURCE_DIR}/../../tests/puzzles.json")
 find_program(PYTHON3_EXE NAMES python3 python)

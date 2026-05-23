@@ -90,6 +90,15 @@ static int collect_features(const chess::Board &board, int *out)
     return n;
 }
 
+std::vector<int> nnue_active_features(const chess::Board &board)
+{
+    int raw[32];
+    int n = collect_features(board, raw);
+    std::vector<int> v(raw, raw + n);
+    std::sort(v.begin(), v.end());
+    return v;
+}
+
 int nnue_eval(const chess::Board &board)
 {
     int active[32];
