@@ -2,6 +2,7 @@ data/
 checkpoints/
 *.bin
 *.nnue
+!omblecavalier.nnue
 *.pt
 *.zst
 __pycache__/
