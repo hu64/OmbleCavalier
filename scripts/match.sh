@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# match.sh — Build two engine versions and run a head-to-head match.
+# match.sh — Build/stage both engine implementations and run head-to-head matches.
 #
 # Usage:
 #   scripts/match.sh [options]
@@ -10,14 +10,16 @@
 #   --tc      TC    Time control in cutechess format (default: 10+0.1)
 #   --branch  B     Base branch to compare against (default: master)
 #   --no-cache      Force rebuild even if binary already cached
+#   --cpp-only      Skip the Python engine match
+#   --py-only       Skip the C++ engine match
 #
 # Prerequisites:
 #   cmake, make, cutechess-cli
 #   macOS: brew install cutechess
 #
 # The current branch is the "challenger". The base branch is the "baseline".
-# Both C++ engines are built once and cached in tests/engines/ by commit hash,
-# so re-running the script is fast.
+# C++ binaries are cached in tests/engines/ by commit hash.
+# Python source snapshots are also cached in tests/engines/ by commit hash.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -26,14 +28,18 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 ENGINE_CACHE="$REPO_ROOT/tests/engines"
 MATCH_DIR="$REPO_ROOT/matches"
 CPP_SRC="$REPO_ROOT/src/OmbleCavalierPlusPlus"
+PY_SRC="$REPO_ROOT/src/OmbleCavalierPython"
 OPENINGS="$REPO_ROOT/tests/openings.epd"
 NNUE_FILE="$REPO_ROOT/src/nnue-training/omblecavalier.nnue"
+VENV_PYTHON="$REPO_ROOT/.venv/bin/python3"
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 GAMES=100
 TC="10+0.1"
 BASE_BRANCH="master"
 NO_CACHE=0
+RUN_CPP=1
+RUN_PY=1
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
@@ -42,8 +48,10 @@ while [[ $# -gt 0 ]]; do
         --tc)       TC="$2";          shift 2 ;;
         --branch)   BASE_BRANCH="$2"; shift 2 ;;
         --no-cache) NO_CACHE=1;       shift   ;;
+        --cpp-only) RUN_PY=0;         shift   ;;
+        --py-only)  RUN_CPP=0;        shift   ;;
         -h|--help)
-            sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+            sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) echo "Unknown argument: $1  (use --help)"; exit 1 ;;
     esac
@@ -55,9 +63,12 @@ fi
 
 # ── Prerequisite check ────────────────────────────────────────────────────────
 missing=()
-for cmd in git cmake make cutechess-cli python3; do
+for cmd in git cmake make cutechess-cli; do
     command -v "$cmd" &>/dev/null || missing+=("$cmd")
 done
+if [[ ! -x "$VENV_PYTHON" ]]; then
+    missing+=("$VENV_PYTHON (run: uv sync)")
+fi
 if (( ${#missing[@]} > 0 )); then
     echo "ERROR: Missing prerequisites: ${missing[*]}"
     echo "  cutechess-cli: brew install cutechess"
@@ -70,18 +81,11 @@ mkdir -p "$ENGINE_CACHE" "$MATCH_DIR"
 CURRENT_BRANCH=$(git -C "$REPO_ROOT" rev-parse --abbrev-ref HEAD)
 CURRENT_HASH=$(git  -C "$REPO_ROOT" rev-parse --short HEAD)
 
-# Accept local or remote ref for base branch
 BASE_HASH=$(git -C "$REPO_ROOT" rev-parse --short "${BASE_BRANCH}" 2>/dev/null \
          || git -C "$REPO_ROOT" rev-parse --short "origin/${BASE_BRANCH}")
 
 CURRENT_SLUG="${CURRENT_BRANCH//\//-}"
 BASE_SLUG="${BASE_BRANCH//\//-}"
-
-CURRENT_BIN="$ENGINE_CACHE/ocpp-${CURRENT_SLUG}-${CURRENT_HASH}"
-BASE_BIN="$ENGINE_CACHE/ocpp-${BASE_SLUG}-${BASE_HASH}"
-
-CURRENT_NAME="${CURRENT_SLUG}"
-BASE_NAME="${BASE_SLUG}-${BASE_HASH}"
 
 echo "╔══════════════════════════════════════════════════════╗"
 echo "║             OmbleCavalier Engine Match               ║"
@@ -92,13 +96,13 @@ printf "║  Games      : %-5s   TC: %-26s   ║\n" "$GAMES" "$TC"
 echo "╚══════════════════════════════════════════════════════╝"
 echo ""
 
-# ── Build helper ──────────────────────────────────────────────────────────────
+# ── C++ build helper ──────────────────────────────────────────────────────────
 build_cpp() {
     local src_dir="$1"
     local out_bin="$2"
     local label="$3"
 
-    echo "  ▶ Building ${label}…"
+    echo "  ▶ Building C++ ${label}…"
     local build_dir
     build_dir=$(mktemp -d)
 
@@ -118,66 +122,97 @@ build_cpp() {
     echo "  ✓ ${label} → $(basename "$out_bin")"
 }
 
-# ── Build challenger (current branch) ─────────────────────────────────────────
-if [[ $NO_CACHE -eq 1 || ! -f "$CURRENT_BIN" ]]; then
-    build_cpp "$CPP_SRC" "$CURRENT_BIN" "$CURRENT_BRANCH"
-else
-    echo "  ✓ Cached: $(basename "$CURRENT_BIN")"
-fi
+# ── Python launcher helper ────────────────────────────────────────────────────
+# Writes a small shell script that sets PYTHONPATH to the given source dir
+# and runs the Python engine using the shared root venv.
+make_py_launcher() {
+    local src_dir="$1"
+    local launcher="$2"
+    cat > "$launcher" << LAEOF
+#!/usr/bin/env bash
+export PYTHONPATH="$src_dir"
+exec "$VENV_PYTHON" -m omblecavalier.engines.omble_cavalier
+LAEOF
+    chmod +x "$launcher"
+}
 
-# ── Build baseline (base branch) via git worktree ─────────────────────────────
-# git worktree gives us a clean checkout without touching the current tree.
-if [[ $NO_CACHE -eq 1 || ! -f "$BASE_BIN" ]]; then
-    WORKTREE=$(mktemp -d)
-    trap 'git -C "$REPO_ROOT" worktree remove --force "$WORKTREE" 2>/dev/null; rm -rf "$WORKTREE"' EXIT
-
-    git -C "$REPO_ROOT" worktree add --detach "$WORKTREE" "$BASE_HASH" 2>/dev/null
-    build_cpp "$WORKTREE/src/OmbleCavalierPlusPlus" "$BASE_BIN" "$BASE_BRANCH"
-
-    git -C "$REPO_ROOT" worktree remove --force "$WORKTREE" 2>/dev/null; rm -rf "$WORKTREE"
-    trap - EXIT
-else
-    echo "  ✓ Cached: $(basename "$BASE_BIN")"
-fi
-
-# ── Stage NNUE weight file for engines that support it ───────────────────────
+# ── Stage NNUE weights ────────────────────────────────────────────────────────
 if [[ -f "$NNUE_FILE" ]]; then
     cp "$NNUE_FILE" "$ENGINE_CACHE/omblecavalier.nnue"
     echo "  ✓ NNUE weights staged → tests/engines/"
 fi
+
+# ── C++ engine setup ──────────────────────────────────────────────────────────
+if (( RUN_CPP )); then
+    echo ""
+    echo "── C++ engines ──────────────────────────────────────────"
+    CURRENT_CPP_BIN="$ENGINE_CACHE/ocpp-${CURRENT_SLUG}-${CURRENT_HASH}"
+    BASE_CPP_BIN="$ENGINE_CACHE/ocpp-${BASE_SLUG}-${BASE_HASH}"
+
+    if [[ $NO_CACHE -eq 1 || ! -f "$CURRENT_CPP_BIN" ]]; then
+        build_cpp "$CPP_SRC" "$CURRENT_CPP_BIN" "$CURRENT_BRANCH"
+    else
+        echo "  ✓ Cached: $(basename "$CURRENT_CPP_BIN")"
+    fi
+
+    if [[ $NO_CACHE -eq 1 || ! -f "$BASE_CPP_BIN" ]]; then
+        WORKTREE=$(mktemp -d)
+        trap 'git -C "$REPO_ROOT" worktree remove --force "$WORKTREE" 2>/dev/null; rm -rf "$WORKTREE"' EXIT
+        git -C "$REPO_ROOT" worktree add --detach "$WORKTREE" "$BASE_HASH" 2>/dev/null
+        build_cpp "$WORKTREE/src/OmbleCavalierPlusPlus" "$BASE_CPP_BIN" "$BASE_BRANCH"
+        git -C "$REPO_ROOT" worktree remove --force "$WORKTREE" 2>/dev/null; rm -rf "$WORKTREE"
+        trap - EXIT
+    else
+        echo "  ✓ Cached: $(basename "$BASE_CPP_BIN")"
+    fi
+fi
+
+# ── Python engine setup ───────────────────────────────────────────────────────
+if (( RUN_PY )); then
+    echo ""
+    echo "── Python engines ───────────────────────────────────────"
+    CURRENT_PY_LAUNCHER="$ENGINE_CACHE/ocpy-${CURRENT_SLUG}-${CURRENT_HASH}.sh"
+    BASE_PY_DIR="$ENGINE_CACHE/py-src-${BASE_SLUG}-${BASE_HASH}"
+    BASE_PY_LAUNCHER="$ENGINE_CACHE/ocpy-${BASE_SLUG}-${BASE_HASH}.sh"
+
+    # Current branch: always regenerate launcher (points to live source)
+    make_py_launcher "$PY_SRC" "$CURRENT_PY_LAUNCHER"
+    echo "  ✓ Python challenger launcher → $(basename "$CURRENT_PY_LAUNCHER")"
+
+    # Base branch: cache a source snapshot so we don't keep a live worktree
+    if [[ $NO_CACHE -eq 1 || ! -d "$BASE_PY_DIR" ]]; then
+        echo "  ▶ Snapshotting Python ${BASE_BRANCH}…"
+        WORKTREE_PY=$(mktemp -d)
+        trap 'git -C "$REPO_ROOT" worktree remove --force "$WORKTREE_PY" 2>/dev/null; rm -rf "$WORKTREE_PY"' EXIT
+        git -C "$REPO_ROOT" worktree add --detach "$WORKTREE_PY" "$BASE_HASH" 2>/dev/null
+        rm -rf "$BASE_PY_DIR"
+        cp -r "$WORKTREE_PY/src/OmbleCavalierPython" "$BASE_PY_DIR"
+        git -C "$REPO_ROOT" worktree remove --force "$WORKTREE_PY" 2>/dev/null; rm -rf "$WORKTREE_PY"
+        trap - EXIT
+        echo "  ✓ ${BASE_BRANCH} → $(basename "$BASE_PY_DIR")"
+    else
+        echo "  ✓ Cached: $(basename "$BASE_PY_DIR")"
+    fi
+    make_py_launcher "$BASE_PY_DIR" "$BASE_PY_LAUNCHER"
+fi
+
 echo ""
 
-# ── Run match ─────────────────────────────────────────────────────────────────
+# ── Shared cutechess args ─────────────────────────────────────────────────────
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-PGN_FILE="$MATCH_DIR/${TIMESTAMP}-${CURRENT_SLUG}-vs-${BASE_SLUG}.pgn"
-
-ROUNDS=$(( GAMES / 2 ))       # each opening played from both colours
-
+ROUNDS=$(( GAMES / 2 ))
 OPENINGS_ARGS=()
 [[ -f "$OPENINGS" ]] && OPENINGS_ARGS=(-openings "file=$OPENINGS" format=epd order=random)
 
-echo "  ▶ Running ${GAMES} games (${ROUNDS} opening pairs)…"
-echo ""
+# ── Result parser (reused for both matches) ───────────────────────────────────
+parse_results() {
+    local pgn="$1" e1="$2" e2="$3"
+    "$VENV_PYTHON" - "$pgn" "$e1" "$e2" << 'PYEOF'
+import sys, re, math as _m
 
-cutechess-cli \
-    -engine "cmd=$CURRENT_BIN" "name=$CURRENT_NAME" "dir=$ENGINE_CACHE" proto=uci \
-    -engine "cmd=$BASE_BIN"    "name=$BASE_NAME"    "dir=$ENGINE_CACHE" proto=uci \
-    -each "tc=$TC" \
-    -rounds "$ROUNDS" \
-    -games 2 \
-    -repeat \
-    -pgnout "$PGN_FILE" \
-    -resign movecount=5 score=1000 \
-    -draw movenumber=40 movecount=8 score=10 \
-    "${OPENINGS_ARGS[@]}"
-
-# ── Parse and display results ─────────────────────────────────────────────────
-python3 - "$PGN_FILE" "$CURRENT_NAME" "$BASE_NAME" << 'PYEOF'
-import sys, re, math
-
-pgn_path  = sys.argv[1]
-engine1   = sys.argv[2]
-engine2   = sys.argv[3]
+pgn_path = sys.argv[1]
+engine1  = sys.argv[2]
+engine2  = sys.argv[3]
 
 w1 = w2 = draws = 0
 white = black = result = None
@@ -202,7 +237,7 @@ with open(pgn_path) as f:
                 draws += 1
             white = black = result = None
 
-total  = w1 + w2 + draws
+total = w1 + w2 + draws
 if total == 0:
     print("No completed games found in PGN.")
     sys.exit(0)
@@ -210,15 +245,11 @@ if total == 0:
 pts1 = w1 + draws * 0.5
 pts2 = w2 + draws * 0.5
 
-# LOS (likelihood of superiority) — probability that engine1 is stronger
-# Simple normal approximation: LOS = Φ((W-L) / sqrt(W+L))
-import math as _m
 los = 0.5
 if (w1 + w2) > 0:
     z = (w1 - w2) / _m.sqrt(w1 + w2)
     los = 0.5 * (1 + _m.erf(z / _m.sqrt(2)))
 
-# Elo estimate (logistic model)
 elo_diff = 0
 if 0 < pts1 < total:
     elo_diff = round(-400 * _m.log10(total / pts1 - 1))
@@ -244,3 +275,52 @@ print("╚═══════════════════════�
 print()
 print(f"  PGN log: {pgn_path}")
 PYEOF
+}
+
+# ── C++ match ─────────────────────────────────────────────────────────────────
+if (( RUN_CPP )); then
+    CPP_PGN="$MATCH_DIR/${TIMESTAMP}-cpp-${CURRENT_SLUG}-vs-${BASE_SLUG}.pgn"
+    CPP_E1_NAME="cpp-${CURRENT_SLUG}"
+    CPP_E2_NAME="cpp-${BASE_SLUG}-${BASE_HASH}"
+
+    echo "▶ C++ match: ${GAMES} games (${ROUNDS} opening pairs)…"
+    echo ""
+
+    cutechess-cli \
+        -engine "cmd=$CURRENT_CPP_BIN" "name=$CPP_E1_NAME" "dir=$ENGINE_CACHE" proto=uci \
+        -engine "cmd=$BASE_CPP_BIN"    "name=$CPP_E2_NAME" "dir=$ENGINE_CACHE" proto=uci \
+        -each "tc=$TC" \
+        -rounds "$ROUNDS" \
+        -games 2 \
+        -repeat \
+        -pgnout "$CPP_PGN" \
+        -resign movecount=5 score=1000 \
+        -draw movenumber=40 movecount=8 score=10 \
+        "${OPENINGS_ARGS[@]}"
+
+    parse_results "$CPP_PGN" "$CPP_E1_NAME" "$CPP_E2_NAME"
+fi
+
+# ── Python match ──────────────────────────────────────────────────────────────
+if (( RUN_PY )); then
+    PY_PGN="$MATCH_DIR/${TIMESTAMP}-py-${CURRENT_SLUG}-vs-${BASE_SLUG}.pgn"
+    PY_E1_NAME="py-${CURRENT_SLUG}"
+    PY_E2_NAME="py-${BASE_SLUG}-${BASE_HASH}"
+
+    echo "▶ Python match: ${GAMES} games (${ROUNDS} opening pairs)…"
+    echo ""
+
+    cutechess-cli \
+        -engine "cmd=$CURRENT_PY_LAUNCHER" "name=$PY_E1_NAME" "dir=$ENGINE_CACHE" proto=uci \
+        -engine "cmd=$BASE_PY_LAUNCHER"    "name=$PY_E2_NAME" "dir=$ENGINE_CACHE" proto=uci \
+        -each "tc=$TC" \
+        -rounds "$ROUNDS" \
+        -games 2 \
+        -repeat \
+        -pgnout "$PY_PGN" \
+        -resign movecount=5 score=1000 \
+        -draw movenumber=40 movecount=8 score=10 \
+        "${OPENINGS_ARGS[@]}"
+
+    parse_results "$PY_PGN" "$PY_E1_NAME" "$PY_E2_NAME"
+fi

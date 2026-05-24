@@ -1,5 +1,6 @@
 #include "search.hpp"
 #include "eval.hpp"
+#include "nnue.hpp"
 #include "tt.hpp"
 #include "utils.hpp"
 #include <climits>
@@ -45,9 +46,11 @@ int quiesce(Board &board, int alpha, int beta, int plyFromRoot)
         if (capturedVal > 0 && stand_pat + capturedVal + 200 <= alpha)
             continue;
 
+        if (nnue_loaded()) nnue_push(board, move);
         board.makeMove(move);
         int score = -quiesce(board, -beta, -alpha, plyFromRoot + 1);
         board.unmakeMove(move);
+        if (nnue_loaded()) nnue_pop();
 
         if (score >= beta)
             return score;
@@ -150,6 +153,7 @@ int negamax(Board &board, int depth, int alpha, int beta,
             continue;
         }
 
+        if (nnue_loaded()) nnue_push(board, move);
         board.makeMove(move);
         bool givesCheck = board.inCheck();
 
@@ -175,6 +179,7 @@ int negamax(Board &board, int depth, int alpha, int beta,
         }
 
         board.unmakeMove(move);
+        if (nnue_loaded()) nnue_pop();
         moveIdx++;
 
         if (timedOut)
@@ -248,9 +253,11 @@ SearchResult negamaxRoot(Board &board, int depth, int alpha, int beta,
 
     for (auto move : legalMoves)
     {
+        if (nnue_loaded()) nnue_push(board, move);
         board.makeMove(move);
         int score = -negamax(board, depth - 1, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
         board.unmakeMove(move);
+        if (nnue_loaded()) nnue_pop();
 
         if (timedOut)
             break;
@@ -277,6 +284,7 @@ Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining
 {
     resetSearchState();
     ttClear();
+    if (nnue_loaded()) nnue_refresh(board);
 
     int moveNumber = board.fullMoveNumber();
     chess::Movelist legalMoves;

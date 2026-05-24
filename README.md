@@ -194,12 +194,38 @@ Both engines are being extended with a [NNUE](https://www.chessprogramming.org/N
 
 ### Network architecture
 
-`768 → 256 → 32 → 1` with ClippedReLU activations. Input is a 768-bit binary feature vector (12 piece types × 64 squares, from side-to-move perspective). Output is a win-probability logit; converted to centipawns via `400 × log(p / (1−p))`.
+`768 → 512 → N_BUCKETS (8)` following the Weiawaga/Mimir design:
+
+| Component | Detail |
+|---|---|
+| Input | 768 binary features (12 piece types × 64 squares, STM perspective) |
+| L1 | `nn.Linear(768, 512)` |
+| Activation | **SCReLU**: `clamp(x, 0, 1)²` — stronger than plain CReLU, no extra runtime cost |
+| Output heads | **8 independent** `Linear(512 → 1)` heads, one per material-count bucket |
+| Bucket index | `clamp((32 − piece_count) × 8 / 32, 0, 7)` — bucket 0 = opening (32 pieces), bucket 7 = endgame |
+| C++ inference | **Dual incremental accumulator** — one per color perspective (White / Black), updated with `nnue_push(move)` / `nnue_pop()` on each make/unmake; full recompute via `nnue_refresh(board)` only once per search |
+| Python inference | **onnxruntime** session (CoreML EP on Apple Silicon ≈ 15× vs numpy; CPU EP ≈ 5×); falls back to pure numpy if no `.onnx` is found |
+| Output | Raw logit → win-probability → centipawns via `400 × log(p / (1 − p))` |
+
+The dual accumulator avoids recomputing the expensive 768×512 matrix multiply from scratch at every node. When a piece moves from square A to B, only the weights for those two feature indices are added/subtracted — roughly 50× faster than a full forward pass per node.
+
+### Training results
+
+Elo difference vs. master (HCE baseline), measured over 100 games at TC 5+0.05:
+
+| Run | Positions | Architecture | C++ Elo | Python Elo |
+|-----|-----------|-------------|---------|------------|
+| 1 | 10 M | 768→256→32→1, CReLU | −275 | — |
+| 2 | 50 M | 768→256→32→1, CReLU | −70 | — |
+| 3 | 100 M | **768→512→8 buckets, SCReLU** | **+78** ✓ | **+275** ✓ |
+
+Both engines beat master with 100M training positions and the upgraded architecture (dual accumulator, SCReLU, piece-count output buckets).
 
 ### Pipeline
 
 ```
 prepare_data.py  →  positions.bin  →  train.py  →  best.pt  →  export.py  →  omblecavalier.nnue
+                                                                          └→  omblecavalier.onnx  (auto-exported alongside .nnue)
 ```
 
 **1. Prepare data** — streams `lichess_db_eval.jsonl.zst` ([download from database.lichess.org](https://database.lichess.org/#evals), ~10 GB) and writes binary position records:
@@ -222,10 +248,13 @@ uv run python train.py \
     --batch   16384
 ```
 
-**3. Export** — converts `best.pt` to a portable `.nnue` binary (magic header + float32 weights):
+**3. Export** — converts `best.pt` to two runtime files in one command:
+- `omblecavalier.nnue` — v2 custom binary for the C++ engine (magic `NNUE`, version 2, N_BUCKETS, N0/N1 sizes, float32 weights for L1 + 8 output heads)
+- `omblecavalier.onnx` — ONNX graph (opset 17) for the Python engine (onnxruntime with CoreML EP on Apple Silicon for maximum speed)
 
 ```bash
 uv run python export.py --model checkpoints/best.pt --output omblecavalier.nnue
+# also writes omblecavalier.onnx in the same directory
 ```
 
 **4. Validate** — sanity-checks win-probabilities on reference positions (starting position ≈ 0.5, clearly winning ≥ 0.65, clearly losing ≤ 0.35):
@@ -317,8 +346,8 @@ Ranked by estimated Elo gain per implementation effort. _Both engines_ unless no
 
 ### Tier 3 — Larger effort
 
-- [ ] **NNUE evaluation (Python engine)** — load `omblecavalier.nnue`, expose `eval_cp(fen)` via `nnue.py`, replace `evaluateBoard` with NNUE; fall back to HCE when no `.nnue` file is present. Est. +100–200 Elo. _Python only._
-- [ ] **NNUE evaluation (C++ engine)** — load `.nnue` binary in `nnue.cpp`, implement forward pass 768→256→32→1 with ClippedReLU, replace `evaluateBoard()` with NNUE; HCE fallback. Add `nnue.cpp` to CMakeLists. Est. +100–200 Elo. _C++ only._
+- [x] **NNUE evaluation (Python engine)** — `nnue.py` loads `omblecavalier.nnue` (numpy) or `omblecavalier.onnx` (onnxruntime, CoreML EP on Apple Silicon); replaces `evaluateBoard` with HCE fallback. **+275 Elo** vs HCE master. _Python only._
+- [x] **NNUE evaluation (C++ engine)** — `nnue.cpp` loads v2 `.nnue` binary; dual incremental accumulator (one per color perspective) with `nnue_push`/`nnue_pop` for O(changed-features) updates per node; 8 piece-count output buckets; SCReLU activation; HCE fallback. **+78 Elo** vs HCE master. _C++ only._
 - [ ] **Singular extensions** — Detect when one move is singularly better than all alternatives (re-search with reduced beta); extend that move's search by 1 ply. Est. +20–30 Elo. _C++ engine._
 - [ ] **Pondering (think on opponent's time)** — Support `go ponder` / `ponderhit` / `stop`; keep searching the expected reply during the opponent's clock and hit the ground running if the prediction is correct. `ponder: true` is already set in `config.yml` so lichess-bot will send these commands — the engine just doesn't handle them yet. Implementation notes: (1) add a global `std::atomic<bool> g_stop` flag checked in `negamax`/`quiesce` alongside the time check; (2) run `findBestMoveIterative` in a `std::thread` so `main.cpp`'s stdin loop can still read `stop`/`ponderhit` while the search runs; (3) on `stop`, set `g_stop = true` and join the thread; (4) on `ponderhit`, stop the ponder search, restart immediately with real time limits (TT is warm); (5) report `bestmove <m> ponder <pm>` where `<pm>` is `pv[1]` (predicted opponent reply). Hit rate ~50–60 % in practice, effectively doubling thinking time on those moves — especially valuable on slow hardware. Est. +30–60 Elo. _C++ engine (Python engine would need threading too)._
 - [ ] **Lazy SMP (multi-threaded search)** — Spin up N threads each running independent iterative-deepening searches on the same position, all sharing the same transposition table; near-linear Elo scaling up to ~8 threads with minimal synchronisation overhead. Implementation notes: (1) make TT entries use `std::atomic` stores/loads (relaxed memory order is sufficient — a torn read at worst wastes one node); (2) each helper thread starts its ID loop at a slightly different depth offset (thread 0 starts at 1, thread 1 at 2, etc.) to reduce redundant work and diversify the search; (3) all threads share killer/history tables — use `std::atomic<int>` for history or accept benign races; (4) the main thread drives time management and calls `g_stop = true` when the clock expires; helper threads exit on the same flag; (5) collect the best move from whichever thread completed the deepest iteration. The `Threads: 4` UCI option is already wired in `config.yml` but currently does nothing for the homemade engine — this makes it real. Est. +50–80 Elo on 4 cores. _C++ engine._

@@ -17,7 +17,10 @@ from bulletchess import (
     Move,
 )
 
-import nnue as _nnue
+try:
+    from omblecavalier.engines import nnue as _nnue  # package import (tests / installed)
+except ImportError:
+    import nnue as _nnue  # standalone script execution
 
 logging.basicConfig(level=logging.DEBUG)
 
