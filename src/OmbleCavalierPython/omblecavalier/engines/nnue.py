@@ -20,6 +20,7 @@ acceptable for Python; the C++ engine handles the incremental updates.
 import logging
 import os
 import struct
+import sys
 
 import numpy as np
 from bulletchess import BLACK, PIECE_TYPES, SQUARES, WHITE
@@ -37,7 +38,11 @@ _MIRROR = [(7 - sq // 8) * 8 + sq % 8 for sq in range(64)]
 def _search_nnue() -> tuple[str | None, str | None]:
     """Return (nnue_path, onnx_path) for the first matching pair found."""
     here = os.path.dirname(os.path.abspath(__file__))
-    roots = [
+    roots = []
+    # PyInstaller onefile: weights are bundled at the _MEIPASS root
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        roots.append(sys._MEIPASS)
+    roots += [
         here,
         os.path.join(here, "..", "..", "..", "nnue-training"),
         ".",

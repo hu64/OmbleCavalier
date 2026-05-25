@@ -59,6 +59,7 @@ int main(int argc, char *argv[])
     // Try loading NNUE weights from standard locations
     for (const std::string &p : {
             std::string("omblecavalier.nnue"),
+            std::string("src/nnue-training/omblecavalier.nnue"),
             std::string("../../src/nnue-training/omblecavalier.nnue"),
             std::string("../../../src/nnue-training/omblecavalier.nnue"),
          })
