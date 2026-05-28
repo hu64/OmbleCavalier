@@ -43,6 +43,14 @@ add_executable(test_nnue_features
 )
 add_test(NAME testNNUEFeatures COMMAND test_nnue_features)
 
+add_executable(test_nnue_accumulator
+    src/test_nnue_accumulator.cpp
+    src/nnue.cpp
+)
+add_test(NAME testNNUEAccumulator
+    COMMAND test_nnue_accumulator ../../../src/nnue-training/omblecavalier.nnue
+    WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+
 # Generate individual puzzle tests from shared puzzles.json
 set(PUZZLES_JSON "${CMAKE_SOURCE_DIR}/../../tests/puzzles.json")
 find_program(PYTHON3_EXE NAMES python3 python)
