@@ -40,6 +40,15 @@ std::optional<int> ttLookup(const Board &board, int depth, int alpha, int beta, 
     return std::nullopt;
 }
 
+Move ttProbeMove(const Board &board)
+{
+    uint64_t key = board.hash();
+    TTEntry &e = TT[key & (TT_SIZE - 1)];
+    if (e.flag != TTEntry::EMPTY && e.key == key && e.move != Move::NULL_MOVE)
+        return e.move;
+    return Move::NULL_MOVE;
+}
+
 void ttStore(const Board &board, int depth, Move move, int value, int originalAlpha, int beta, int plyFromRoot)
 {
     uint64_t key = board.hash();

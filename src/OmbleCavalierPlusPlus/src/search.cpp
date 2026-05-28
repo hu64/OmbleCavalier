@@ -3,12 +3,27 @@
 #include "tt.hpp"
 #include "utils.hpp"
 #include <climits>
+#include <cstdint>
+#include <limits>
 using namespace chess;
+using namespace std::chrono;
 
 constexpr int MAX_PLY = 128;
 
 static Move killerMoves[MAX_PLY][2];
 static int historyHeuristic[64][64];
+
+// Pondering control
+std::atomic<bool>    g_stop{false};
+std::atomic<int64_t> g_deadline_ns{std::numeric_limits<int64_t>::max()};
+
+static inline bool shouldStop()
+{
+    if (g_stop.load(std::memory_order_relaxed))
+        return true;
+    auto now = steady_clock::now().time_since_epoch().count();
+    return now > g_deadline_ns.load(std::memory_order_relaxed);
+}
 
 void resetSearchState()
 {
@@ -54,13 +69,9 @@ int quiesce(Board &board, int alpha, int beta, int plyFromRoot)
     return stand_pat;
 }
 
-int negamax(Board &board, int depth, int alpha, int beta,
-            std::chrono::steady_clock::time_point start, double timeLimit, int plyFromRoot, bool &timedOut)
+int negamax(Board &board, int depth, int alpha, int beta, int plyFromRoot, bool &timedOut)
 {
-    using namespace std::chrono;
-    if (timedOut)
-        return 0;
-    if (duration<double>(steady_clock::now() - start).count() > timeLimit)
+    if (timedOut || shouldStop())
     {
         timedOut = true;
         return 0;
@@ -97,7 +108,7 @@ int negamax(Board &board, int depth, int alpha, int beta,
         if (nonPawnMaterial >= 2 * MG_VALUES[(int)PieceType::ROOK])
         {
             board.makeNullMove();
-            int nullScore = -negamax(board, depth - 3, -beta, -beta + 1, start, timeLimit, plyFromRoot + 1, timedOut);
+            int nullScore = -negamax(board, depth - 3, -beta, -beta + 1, plyFromRoot + 1, timedOut);
             board.unmakeNullMove();
             if (timedOut)
                 return 0;
@@ -116,7 +127,6 @@ int negamax(Board &board, int depth, int alpha, int beta,
         std::vector<Move>{killerMoves[plyFromRoot][0], killerMoves[plyFromRoot][1]},
         historyHeuristic);
 
-    // Futility pruning: at depth 1, skip quiet moves that can't raise alpha
     static const int FUTILITY_MARGIN = 300;
     bool canFutilityPrune = depth == 1 && !inCheck;
     int staticEval = canFutilityPrune ? evaluateBoard(board, plyFromRoot, legalMoves) : INT_MIN;
@@ -138,17 +148,16 @@ int negamax(Board &board, int depth, int alpha, int beta,
         bool givesCheck = board.inCheck();
 
         int score;
-        // Late Move Reduction: reduce quiet, non-killer, non-check moves after the first few
         if (!inCheck && depth >= 3 && moveIdx >= 2 && !isCapture && !isKiller && !givesCheck)
         {
-            int reduction = 1 + (moveIdx >= 6 ? 1 : 0); // reduce more for very late moves
-            score = -negamax(board, depth - 1 + extension - reduction, -alpha - 1, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
+            int reduction = 1 + (moveIdx >= 6 ? 1 : 0);
+            score = -negamax(board, depth - 1 + extension - reduction, -alpha - 1, -alpha, plyFromRoot + 1, timedOut);
             if (!timedOut && score > alpha)
-                score = -negamax(board, depth - 1 + extension, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
+                score = -negamax(board, depth - 1 + extension, -beta, -alpha, plyFromRoot + 1, timedOut);
         }
         else
         {
-            score = -negamax(board, depth - 1 + extension, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
+            score = -negamax(board, depth - 1 + extension, -beta, -alpha, plyFromRoot + 1, timedOut);
         }
 
         board.unmakeMove(move);
@@ -188,13 +197,9 @@ int negamax(Board &board, int depth, int alpha, int beta,
     return bestScore;
 }
 
-SearchResult negamaxRoot(Board &board, int depth, int alpha, int beta,
-                         std::chrono::steady_clock::time_point start, double timeLimit, int plyFromRoot, bool &timedOut)
+SearchResult negamaxRoot(Board &board, int depth, int alpha, int beta, int plyFromRoot, bool &timedOut)
 {
-    using namespace std::chrono;
-    if (timedOut)
-        return {0, Move::NULL_MOVE};
-    if (duration<double>(steady_clock::now() - start).count() > timeLimit)
+    if (timedOut || shouldStop())
     {
         timedOut = true;
         return {0, Move::NULL_MOVE};
@@ -226,7 +231,7 @@ SearchResult negamaxRoot(Board &board, int depth, int alpha, int beta,
     for (auto move : legalMoves)
     {
         board.makeMove(move);
-        int score = -negamax(board, depth - 1, -beta, -alpha, start, timeLimit, plyFromRoot + 1, timedOut);
+        int score = -negamax(board, depth - 1, -beta, -alpha, plyFromRoot + 1, timedOut);
         board.unmakeMove(move);
 
         if (timedOut)
@@ -250,7 +255,7 @@ SearchResult negamaxRoot(Board &board, int depth, int alpha, int beta,
     return {bestScore, bestMove};
 }
 
-Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining, double increment)
+Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining, double increment, bool isPonder)
 {
     resetSearchState();
     ttClear();
@@ -259,19 +264,28 @@ Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining
     chess::Movelist legalMoves;
     movegen::legalmoves(legalMoves, board);
 
-    int movesToGo = std::max(1, std::min(40, 60 - moveNumber));
-    double reserve = 1.0;
-    double timeForMove = std::max(0.05, std::min(
-                                            (totalTimeRemaining - reserve) / movesToGo + 0.5 * increment,
-                                            0.5 * totalTimeRemaining));
-
-    auto start = std::chrono::steady_clock::now();
-
     if (legalMoves.empty())
     {
         std::cout << "info string No legal moves available\n";
         return Move::NULL_MOVE;
     }
+
+    int movesToGo = std::max(1, std::min(40, 60 - moveNumber));
+    double reserve = 1.0;
+    double timeForMove = std::max(0.05, std::min(
+        (totalTimeRemaining - reserve) / movesToGo + 0.5 * increment,
+        0.5 * totalTimeRemaining));
+
+    auto start = steady_clock::now();
+
+    if (!isPonder)
+    {
+        // Set absolute deadline for normal searches
+        int64_t deadline = start.time_since_epoch().count()
+                           + static_cast<int64_t>(timeForMove * 1'000'000'000LL);
+        g_deadline_ns.store(deadline, std::memory_order_relaxed);
+    }
+    // For ponder: g_deadline_ns is already INT64_MAX; main thread updates it on ponderhit.
 
     Move bestMove = legalMoves[0];
     int prevScore = 0;
@@ -283,14 +297,14 @@ Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining
 
         int window = 50;
         int alpha = std::max(-MATE_SCORE, prevScore - window);
-        int beta = std::min(MATE_SCORE, prevScore + window);
+        int beta  = std::min(MATE_SCORE,  prevScore + window);
         SearchResult result;
         Move move;
 
         while (true)
         {
-            result = negamaxRoot(board, depth, alpha, beta, start, timeForMove, 0, timedOut);
-            move = result.bestMove;
+            result = negamaxRoot(board, depth, alpha, beta, 0, timedOut);
+            move   = result.bestMove;
 
             if (timedOut)
             {
@@ -336,11 +350,14 @@ Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining
             break;
         }
 
-        double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-        if (elapsed > 0.9 * timeForMove)
+        if (!isPonder)
         {
-            std::cout << "info string Stopping iterative deepening due to time\n";
-            break;
+            double elapsed = duration<double>(steady_clock::now() - start).count();
+            if (elapsed > 0.9 * timeForMove)
+            {
+                std::cout << "info string Stopping iterative deepening due to time\n";
+                break;
+            }
         }
     }
 

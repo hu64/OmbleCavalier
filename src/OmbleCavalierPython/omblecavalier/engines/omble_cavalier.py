@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import logging
 import sys
+import threading
 import time
 from operator import itemgetter
 
@@ -187,6 +188,12 @@ TRANSPOSITION_TABLE = {}
 killer_moves = [[None, None] for _ in range(MAX_PLY)]
 history_heuristic = [[0] * 64 for _ in range(64)]
 game_position_keys: list[int] = []
+
+# ── Pondering control (GIL-safe booleans + one deadline timestamp) ─────────────
+_g_stop: bool = False            # set True to abort search immediately
+_g_deadline: float = float("inf")  # absolute time.time() deadline
+_g_search_thread: threading.Thread | None = None
+_g_ponder_params: dict = {}      # saved from "go ponder": total_time, increment, fullmove
 
 
 def position_key(board: Board) -> int:
@@ -486,7 +493,7 @@ def quiesce(board, alpha, beta, ply_from_root, legal_moves=None, stand_pat=None)
 
 
 def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, rep_counts=None):
-    if time.time() - start_time > time_limit:
+    if _g_stop or time.time() > _g_deadline:
         return None
 
     legal_moves = list(board.legal_moves())
@@ -607,7 +614,7 @@ def find_best_move(board, depth, start_time, time_limit, legal_moves, alpha, bet
     timed_out = False
 
     for move in order_moves(board, legal_moves, 0):
-        if time.time() - start_time > time_limit:
+        if _g_stop or time.time() > _g_deadline:
             timed_out = True
             break
         board.apply(move)
@@ -646,15 +653,36 @@ def _calc_time_for_move(total_time_remaining, move_number, increment):
     )
 
 
-def find_best_move_iterative(board, max_depth, total_time_remaining, increment=0.0):
+def _get_ponder_move(board: Board, best_move: Move) -> Move | None:
+    """Return the top-ordered reply after best_move as a ponder hint."""
+    board.apply(best_move)
+    legal = list(board.legal_moves())
+    result = order_moves(board, legal, 0)[0] if legal else None
+    board.undo()
+    return result
+
+
+def _stop_pondering() -> None:
+    global _g_stop, _g_search_thread
+    if _g_search_thread and _g_search_thread.is_alive():
+        _g_stop = True
+        _g_search_thread.join()
+        _g_stop = False
+    _g_search_thread = None
+
+
+def find_best_move_iterative(board, max_depth, total_time_remaining, increment=0.0, ponder: bool = False):
+    global _g_deadline
     time_for_move = _calc_time_for_move(total_time_remaining, board.fullmove_number, increment)
     start_time = time.time()
+    if not ponder:
+        _g_deadline = start_time + time_for_move
     reset_search_state()
 
     legal_moves = list(board.legal_moves())
     if not legal_moves:
         print("info string No legal moves available")
-        return None
+        return None, None
 
     # Build repetition counter from game history (includes root position).
     # Root is counted twice: once from game history, once for the active search,
@@ -714,14 +742,22 @@ def find_best_move_iterative(board, max_depth, total_time_remaining, increment=0
             break
 
         elapsed = time.time() - start_time
-        if elapsed > 0.9 * time_for_move:
+        if not ponder and elapsed > 0.9 * time_for_move:
             print("info string Stopping iterative deepening due to time")
             break
 
-    return best_move
+    ponder_move = _get_ponder_move(board, best_move) if best_move else None
+    return best_move, ponder_move
 
 
 def main():
+    # When launched as a subprocess (pipe), stdout is block-buffered.
+    # Force line buffering so every print() reaches the GUI immediately.
+    sys.stdout.reconfigure(line_buffering=True)
+
+    # Declare all module-level search-control globals we write to in this function.
+    global _g_stop, _g_deadline, _g_search_thread, _g_ponder_params
+
     board = Board()
     depth = 30
     total_time_remaining = 60.0
@@ -743,6 +779,7 @@ def main():
             if line == "uci":
                 print("id name OmbleCavalier")
                 print("id author Hughes Perreault")
+                print("option name Ponder type check default true")
                 print("uciok")
                 sys.stdout.flush()
 
@@ -751,6 +788,7 @@ def main():
                 sys.stdout.flush()
 
             elif line == "ucinewgame":
+                _stop_pondering()
                 board = Board.from_fen(
                     "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"
                 )
@@ -785,7 +823,10 @@ def main():
 
             elif line.startswith("go"):
                 tokens = line.split()
+                is_ponder = "ponder" in tokens
                 increment = 0.0
+
+                _stop_pondering()
 
                 if "depth" in tokens:
                     depth = int(tokens[tokens.index("depth") + 1])
@@ -800,27 +841,71 @@ def main():
                 if "binc" in tokens and board.turn != WHITE:
                     increment = int(tokens[tokens.index("binc") + 1]) / 1000
 
-                book_move = None
-                if book is not None:
-                    try:
-                        import chess as pychess
+                if is_ponder:
+                    _g_ponder_params.clear()
+                    _g_ponder_params.update({
+                        "total_time": total_time_remaining,
+                        "increment": increment,
+                        "fullmove": board.fullmove_number,
+                    })
+                    _g_deadline = float("inf")
+                    board_copy = board.copy()
+                    search_depth = depth
 
-                        py_board = pychess.Board(board.fen())
-                        entry = book.find(py_board)
-                        book_move = entry.move.uci()
-                    except Exception:
-                        book_move = None
+                    def _ponder_fn(b=board_copy, d=search_depth):
+                        global _g_search_thread
+                        best_move, ponder_move = find_best_move_iterative(
+                            b, d, 9999.0, 0.0, ponder=True
+                        )
+                        bm = best_move.uci() if best_move else "0000"
+                        ponder_str = (
+                            f" ponder {ponder_move.uci()}"
+                            if ponder_move and not _g_stop
+                            else ""
+                        )
+                        print(f"bestmove {bm}{ponder_str}")
+                        sys.stdout.flush()
 
-                if book_move:
-                    print(f"bestmove {book_move}")
+                    _g_search_thread = threading.Thread(target=_ponder_fn, daemon=True)
+                    _g_search_thread.start()
                 else:
-                    best_move = find_best_move_iterative(
-                        board, depth, total_time_remaining, increment
+                    book_move = None
+                    if book is not None:
+                        try:
+                            import chess as pychess
+
+                            py_board = pychess.Board(board.fen())
+                            entry = book.find(py_board)
+                            book_move = entry.move.uci()
+                        except Exception:
+                            book_move = None
+
+                    if book_move:
+                        print(f"bestmove {book_move}")
+                    else:
+                        best_move, ponder_move = find_best_move_iterative(
+                            board, depth, total_time_remaining, increment
+                        )
+                        if best_move:
+                            ponder_str = f" ponder {ponder_move.uci()}" if ponder_move else ""
+                            print(f"bestmove {best_move.uci()}{ponder_str}")
+                        else:
+                            print("bestmove 0000")
+                    sys.stdout.flush()
+
+            elif line == "ponderhit":
+                p = _g_ponder_params
+                if p:
+                    time_for_move = _calc_time_for_move(
+                        p["total_time"], p["fullmove"], p["increment"]
                     )
-                    print(f"bestmove {best_move.uci()}" if best_move else "bestmove 0000")
-                sys.stdout.flush()
+                    _g_deadline = time.time() + time_for_move
+
+            elif line == "stop":
+                _stop_pondering()
 
             elif line == "quit":
+                _stop_pondering()
                 break
 
             else:

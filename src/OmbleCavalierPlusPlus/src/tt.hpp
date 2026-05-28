@@ -24,3 +24,5 @@ extern TTEntry TT[TT_SIZE];
 std::optional<int> ttLookup(const chess::Board &board, int depth, int alpha, int beta, int plyFromRoot, chess::Move &hashMove);
 void ttStore(const chess::Board &board, int depth, chess::Move move, int value, int originalAlpha, int beta, int plyFromRoot);
 void ttClear();
+// Returns the best move stored for this position, or NULL_MOVE if none.
+chess::Move ttProbeMove(const chess::Board &board);
