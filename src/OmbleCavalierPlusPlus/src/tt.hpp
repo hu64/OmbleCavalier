@@ -1,8 +1,8 @@
 #pragma once
 #include "chess.hpp"
 
-static const int TT_BITS = 20;
-static const int TT_SIZE = 1 << TT_BITS; // ~1M entries, ~24 MB
+static const int TT_BITS = 22;
+static const int TT_SIZE = 1 << TT_BITS; // ~4M entries, ~96 MB
 
 struct TTEntry
 {
