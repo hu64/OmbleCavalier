@@ -1,5 +1,6 @@
 *.yml
 !.github/**/*.yml
+!*.example.yml
 **/__pycache__
 /engines/*
 !/engines/README.md
