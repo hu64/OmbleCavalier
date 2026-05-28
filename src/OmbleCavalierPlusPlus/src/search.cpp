@@ -96,14 +96,13 @@ int negamax(Board &board, int depth, int alpha, int beta,
     if (depth <= 0)
         return quiesce(board, alpha, beta, plyFromRoot + 1);
 
-    // Reverse Futility Pruning: if static eval is strongly above beta, cut off early.
-    // Use a larger margin (200/depth) so we only prune when clearly dominating —
-    // avoids false cuts in tactical positions where static eval underestimates resources.
-    if (depth <= 5 && !inCheck)
+    // Compute static eval once; reused by both RFP and futility pruning below.
+    int staticEval = INT_MIN;
+    if (!inCheck && depth <= 5)
     {
-        int rfpEval = evaluateBoard(board, plyFromRoot, legalMoves);
-        if (rfpEval - 200 * depth >= beta)
-            return rfpEval;
+        staticEval = evaluateBoard(board, plyFromRoot, legalMoves);
+        if (staticEval - 200 * depth >= beta)
+            return staticEval;
     }
 
     // Null move pruning
@@ -134,10 +133,10 @@ int negamax(Board &board, int depth, int alpha, int beta,
         std::vector<Move>{killerMoves[plyFromRoot][0], killerMoves[plyFromRoot][1]},
         historyHeuristic);
 
-    // Futility pruning: at depth 1-2, skip quiet moves that can't raise alpha
+    // Futility pruning: at depth 1-2, skip quiet moves that can't raise alpha.
+    // staticEval was already computed above for depth ≤ 5, so no extra eval call here.
     static const int FUTILITY_MARGINS[3] = { 0, 300, 600 };
     bool canFutilityPrune = depth <= 2 && !inCheck;
-    int staticEval = canFutilityPrune ? evaluateBoard(board, plyFromRoot, legalMoves) : INT_MIN;
 
     int moveIdx = 0;
     for (auto move : legalMoves)
@@ -283,7 +282,6 @@ SearchResult negamaxRoot(Board &board, int depth, int alpha, int beta,
 Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining, double increment)
 {
     resetSearchState();
-    ttClear();
     if (nnue_loaded()) nnue_refresh(board);
 
     int moveNumber = board.fullMoveNumber();

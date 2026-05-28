@@ -3,32 +3,57 @@
 #include <cmath>
 #include <cstring>
 #include <fstream>
+#include <immintrin.h>
 
 // ── Network dimensions (768 → 512 → N_BUCKETS) ───────────────────────────────
 static constexpr int N0        = 768;
 static constexpr int N1        = 512;
 static constexpr int N_BUCKETS = 8;
 
-// Weight storage
-static float g_w1[N1][N0];               // L1 weights  (N1 × N0)
-static float g_b1[N1];                   // L1 biases   (N1)
-static float g_w_out[N_BUCKETS][N1];     // output weights  (N_BUCKETS × N1)
-static float g_b_out[N_BUCKETS];         // output biases   (N_BUCKETS)
+// g_w1_T is stored transposed [N0][N1] for cache-friendly acc updates.
+alignas(32) static float g_w1_T[N0][N1];
+alignas(32) static float g_b1[N1];
+alignas(32) static float g_w_out[N_BUCKETS][N1];
+static float g_b_out[N_BUCKETS];
 static bool  g_loaded = false;
 
-// ── Dual accumulator ─────────────────────────────────────────────────────────
-// Two perspectives (White / Black) maintained side-by-side so both are always
-// up-to-date.  At eval time we select the accumulator for the side to move.
+// ── Lazy accumulator delta ────────────────────────────────────────────────────
+// Each nnue_push records up to 6 piece-move ops without touching the float
+// arrays.  The arrays are only computed (materialized) if nnue_eval is called
+// for that position, saving the 4 KB memcpy + delta work for every branch
+// that gets alpha-beta cut before evaluation.
+struct AccDelta {
+    struct Op {
+        uint8_t color;   // chess::Color cast to uint8_t (WHITE=0, BLACK=1)
+        int8_t  pt_idx;
+        int8_t  sq;
+        int8_t  sign;    // +1 = add, -1 = sub
+    };
+    Op     ops[6];
+    int8_t n = 0;
+
+    void push(chess::Color c, int pt, int s, int sg) {
+        ops[n++] = { static_cast<uint8_t>(c), static_cast<int8_t>(pt),
+                     static_cast<int8_t>(s),  static_cast<int8_t>(sg) };
+    }
+};
+
+// alignas(32) on the float arrays guarantees 32-byte alignment for AVX2 loads.
+// The compiler rounds sizeof(Accumulator) up to a multiple of alignof (32),
+// so every element of g_acc_stack is also 32-byte aligned.
 struct Accumulator {
-    float white[N1];
-    float black[N1];
+    alignas(32) float white[N1];
+    alignas(32) float black[N1];
+    bool     valid;      // false → must materialize from parent before use
+    int      parent_sp;  // stack index of the parent frame
+    AccDelta delta;      // ops to apply on top of the parent to get this frame
 };
 
 static constexpr int ACC_STACK_SIZE = 256;   // MAX_PLY(128) + quiescence + margin
 static Accumulator   g_acc_stack[ACC_STACK_SIZE];
-static int           g_acc_sp = 0;           // index of the current frame
+static int           g_acc_sp = 0;
 
-// Piece-type ordering must match features.py: P N B R Q K (same as chess.hpp 0-5)
+// Piece-type ordering must match features.py: P N B R Q K
 static constexpr chess::PieceType PT_ORDER[6] = {
     chess::PieceType::PAWN,
     chess::PieceType::KNIGHT,
@@ -38,7 +63,7 @@ static constexpr chess::PieceType PT_ORDER[6] = {
     chess::PieceType::KING,
 };
 
-// ── File loading ─────────────────────────────────────────────────────────────
+// ── File loading ──────────────────────────────────────────────────────────────
 
 bool nnue_load(const std::string &path)
 {
@@ -63,10 +88,16 @@ bool nnue_load(const std::string &path)
         return static_cast<bool>(f.read(reinterpret_cast<char *>(dst), n * sizeof(float)));
     };
 
-    if (!read_floats(&g_w1[0][0],     N1 * N0))      return false;
-    if (!read_floats(g_b1,            N1))            return false;
+    {
+        float tmp[N1 * N0];
+        if (!read_floats(tmp, N1 * N0)) return false;
+        for (int i = 0; i < N1; ++i)
+            for (int j = 0; j < N0; ++j)
+                g_w1_T[j][i] = tmp[i * N0 + j];
+    }
+    if (!read_floats(g_b1,            N1))             return false;
     if (!read_floats(&g_w_out[0][0],  N_BUCKETS * N1)) return false;
-    if (!read_floats(g_b_out,         N_BUCKETS))     return false;
+    if (!read_floats(g_b_out,         N_BUCKETS))      return false;
 
     g_loaded = true;
     return true;
@@ -76,10 +107,6 @@ bool nnue_loaded() { return g_loaded; }
 
 // ── Feature index helpers ─────────────────────────────────────────────────────
 
-// Feature index for a piece of `piece_color` and type index `pt_idx` on square
-// `sq` (0-63, a1=0), from `perspective`'s point of view.
-//   - perspective == WHITE: no rank mirroring; own pieces in [0,384), opp in [384,768)
-//   - perspective == BLACK: rank-mirror sq^56; own pieces in [0,384), opp in [384,768)
 static inline int feat_idx(chess::Color piece_color, int pt_idx, int sq,
                             chess::Color perspective)
 {
@@ -87,28 +114,45 @@ static inline int feat_idx(chess::Color piece_color, int pt_idx, int sq,
     return (piece_color == perspective ? 0 : 384) + pt_idx * 64 + eff;
 }
 
-// Add a piece to both accumulators in the current stack frame.
-static inline void acc_add(chess::Color piece_color, int pt_idx, int sq)
+// Apply one piece add/sub to a specific accumulator frame.
+static inline void acc_apply(Accumulator &acc, chess::Color color, int pt_idx,
+                              int sq, int sign)
 {
-    int fw = feat_idx(piece_color, pt_idx, sq, chess::Color::WHITE);
-    int fb = feat_idx(piece_color, pt_idx, sq, chess::Color::BLACK);
-    Accumulator &acc = g_acc_stack[g_acc_sp];
-    for (int i = 0; i < N1; ++i) {
-        acc.white[i] += g_w1[i][fw];
-        acc.black[i] += g_w1[i][fb];
+    int fw = feat_idx(color, pt_idx, sq, chess::Color::WHITE);
+    int fb = feat_idx(color, pt_idx, sq, chess::Color::BLACK);
+    const float *cw = g_w1_T[fw];
+    const float *cb = g_w1_T[fb];
+    if (sign > 0) {
+        for (int i = 0; i < N1; ++i) acc.white[i] += cw[i];
+        for (int i = 0; i < N1; ++i) acc.black[i] += cb[i];
+    } else {
+        for (int i = 0; i < N1; ++i) acc.white[i] -= cw[i];
+        for (int i = 0; i < N1; ++i) acc.black[i] -= cb[i];
     }
 }
 
-// Remove a piece from both accumulators in the current stack frame.
-static inline void acc_sub(chess::Color piece_color, int pt_idx, int sq)
+// Ensure g_acc_stack[sp] has valid float arrays.
+// Recursively materializes the parent first if needed (chain is at most a few
+// frames deep because RFP / futility / quiesce always call nnue_eval before
+// pushing grandchildren).
+static void materialize(int sp)
 {
-    int fw = feat_idx(piece_color, pt_idx, sq, chess::Color::WHITE);
-    int fb = feat_idx(piece_color, pt_idx, sq, chess::Color::BLACK);
-    Accumulator &acc = g_acc_stack[g_acc_sp];
-    for (int i = 0; i < N1; ++i) {
-        acc.white[i] -= g_w1[i][fw];
-        acc.black[i] -= g_w1[i][fb];
+    Accumulator &acc = g_acc_stack[sp];
+    if (acc.valid) return;
+
+    int psp = acc.parent_sp;
+    if (!g_acc_stack[psp].valid) materialize(psp);
+
+    const Accumulator &par = g_acc_stack[psp];
+    std::memcpy(acc.white, par.white, N1 * sizeof(float));
+    std::memcpy(acc.black, par.black, N1 * sizeof(float));
+
+    for (int i = 0; i < acc.delta.n; ++i) {
+        const AccDelta::Op &op = acc.delta.ops[i];
+        acc_apply(acc, static_cast<chess::Color>(op.color),
+                  op.pt_idx, op.sq, op.sign);
     }
+    acc.valid = true;
 }
 
 // ── Public accumulator API ────────────────────────────────────────────────────
@@ -117,6 +161,10 @@ void nnue_refresh(const chess::Board &board)
 {
     g_acc_sp = 0;
     Accumulator &acc = g_acc_stack[0];
+    acc.valid     = true;
+    acc.parent_sp = -1;
+    acc.delta.n   = 0;
+
     for (int i = 0; i < N1; ++i) {
         acc.white[i] = g_b1[i];
         acc.black[i] = g_b1[i];
@@ -127,36 +175,36 @@ void nnue_refresh(const chess::Board &board)
             while (bb) {
                 int sq = bb.lsb();
                 bb.clear(sq);
-                acc_add(c, i, sq);
+                acc_apply(acc, c, i, sq, +1);
             }
         }
     }
 }
 
+// Record the move as a pending delta — no float work done here.
+// The actual accumulator update is deferred to the first nnue_eval call.
 void nnue_push(const chess::Board &board, chess::Move move)
 {
-    // Push a copy of the current frame onto the stack.
     int next = g_acc_sp + 1;
-    g_acc_stack[next] = g_acc_stack[g_acc_sp];
+    Accumulator &frame = g_acc_stack[next];
+    frame.valid     = false;
+    frame.parent_sp = g_acc_sp;
+    frame.delta.n   = 0;
     g_acc_sp = next;
 
     chess::Color stm = board.sideToMove();
     auto mt = move.typeOf();
 
-    // ── Castling ────────────────────────────────────────────────────────────
-    // In chess.hpp the move is encoded as king→rook; we resolve the real
-    // destinations via the library helpers.
     if (mt == chess::Move::CASTLING) {
         bool kingside = move.to() > move.from();
         int king_from = move.from().index();
         int rook_from = move.to().index();
         int king_to   = chess::Square::castling_king_square(kingside, stm).index();
         int rook_to   = chess::Square::castling_rook_square(kingside, stm).index();
-
-        acc_sub(stm, 5 /* KING */, king_from);
-        acc_sub(stm, 3 /* ROOK */, rook_from);
-        acc_add(stm, 5,            king_to);
-        acc_add(stm, 3,            rook_to);
+        frame.delta.push(stm, 5 /* KING */, king_from, -1);
+        frame.delta.push(stm, 3 /* ROOK */, rook_from, -1);
+        frame.delta.push(stm, 5,            king_to,   +1);
+        frame.delta.push(stm, 3,            rook_to,   +1);
         return;
     }
 
@@ -165,22 +213,19 @@ void nnue_push(const chess::Board &board, chess::Move move)
     int from_sq = move.from().index();
     int to_sq   = move.to().index();
 
-    // ── En passant capture ──────────────────────────────────────────────────
-    // The captured pawn is NOT on move.to() but one rank behind it.
     if (mt == chess::Move::ENPASSANT) {
         int ep_sq = move.to().ep_square().index();
-        acc_sub(~stm, 0 /* PAWN */, ep_sq);
+        frame.delta.push(~stm, 0 /* PAWN */, ep_sq, -1);
     } else if (board.isCapture(move)) {
         chess::Piece cap = board.at(move.to());
-        acc_sub(cap.color(), static_cast<int>(cap.type().internal()), to_sq);
+        frame.delta.push(cap.color(), static_cast<int>(cap.type().internal()), to_sq, -1);
     }
 
-    // ── Move the piece (handle promotion) ───────────────────────────────────
-    acc_sub(stm, pt_idx, from_sq);
+    frame.delta.push(stm, pt_idx, from_sq, -1);
     if (mt == chess::Move::PROMOTION) {
-        acc_add(stm, static_cast<int>(move.promotionType().internal()), to_sq);
+        frame.delta.push(stm, static_cast<int>(move.promotionType().internal()), to_sq, +1);
     } else {
-        acc_add(stm, pt_idx, to_sq);
+        frame.delta.push(stm, pt_idx, to_sq, +1);
     }
 }
 
@@ -189,26 +234,53 @@ void nnue_pop()
     --g_acc_sp;
 }
 
-// ── Inference ────────────────────────────────────────────────────────────────
+// ── Inference ─────────────────────────────────────────────────────────────────
 
 int nnue_eval(const chess::Board &board)
 {
+    materialize(g_acc_sp);
     const Accumulator &acc = g_acc_stack[g_acc_sp];
     const float *stm_acc   = (board.sideToMove() == chess::Color::WHITE)
                              ? acc.white : acc.black;
 
-    // Bucket: fewer pieces → higher bucket index (more endgame-specialised head)
     int n_pieces = board.occ().count();
     int bucket   = std::min(N_BUCKETS - 1, (32 - n_pieces) * N_BUCKETS / 32);
 
-    // SCReLU: clamp(x, 0, 1)^2
-    float out = g_b_out[bucket];
-    for (int i = 0; i < N1; ++i) {
-        float c = stm_acc[i] < 0.0f ? 0.0f : (stm_acc[i] > 1.0f ? 1.0f : stm_acc[i]);
-        out += g_w_out[bucket][i] * (c * c);
+    // SCReLU clamp(x,0,1)² + weighted dot product, unrolled 4× with AVX2 FMA.
+    // stm_acc and g_w_out[bucket] are both 32-byte aligned (see struct layout).
+    const float *w    = g_w_out[bucket];
+    const __m256 zero = _mm256_setzero_ps();
+    const __m256 one  = _mm256_set1_ps(1.0f);
+    __m256 sum0 = _mm256_setzero_ps();
+    __m256 sum1 = _mm256_setzero_ps();
+    __m256 sum2 = _mm256_setzero_ps();
+    __m256 sum3 = _mm256_setzero_ps();
+
+    for (int i = 0; i < N1; i += 32) {
+        __m256 x0 = _mm256_load_ps(stm_acc + i);
+        __m256 x1 = _mm256_load_ps(stm_acc + i +  8);
+        __m256 x2 = _mm256_load_ps(stm_acc + i + 16);
+        __m256 x3 = _mm256_load_ps(stm_acc + i + 24);
+
+        __m256 c0 = _mm256_min_ps(_mm256_max_ps(x0, zero), one);
+        __m256 c1 = _mm256_min_ps(_mm256_max_ps(x1, zero), one);
+        __m256 c2 = _mm256_min_ps(_mm256_max_ps(x2, zero), one);
+        __m256 c3 = _mm256_min_ps(_mm256_max_ps(x3, zero), one);
+
+        sum0 = _mm256_fmadd_ps(_mm256_load_ps(w + i),      _mm256_mul_ps(c0, c0), sum0);
+        sum1 = _mm256_fmadd_ps(_mm256_load_ps(w + i +  8), _mm256_mul_ps(c1, c1), sum1);
+        sum2 = _mm256_fmadd_ps(_mm256_load_ps(w + i + 16), _mm256_mul_ps(c2, c2), sum2);
+        sum3 = _mm256_fmadd_ps(_mm256_load_ps(w + i + 24), _mm256_mul_ps(c3, c3), sum3);
     }
 
-    // logit → win-probability → centipawns
+    __m256 s  = _mm256_add_ps(_mm256_add_ps(sum0, sum1), _mm256_add_ps(sum2, sum3));
+    __m128 lo = _mm256_castps256_ps128(s);
+    __m128 hi = _mm256_extractf128_ps(s, 1);
+    lo = _mm_add_ps(lo, hi);
+    lo = _mm_hadd_ps(lo, lo);
+    lo = _mm_hadd_ps(lo, lo);
+    float out = g_b_out[bucket] + _mm_cvtss_f32(lo);
+
     float wp = 1.0f / (1.0f + std::exp(-out));
     wp = std::max(1e-7f, std::min(1.0f - 1e-7f, wp));
     return static_cast<int>(400.0f * std::log(wp / (1.0f - wp)));
@@ -219,8 +291,8 @@ int nnue_eval(const chess::Board &board)
 static int collect_features(const chess::Board &board, int *out)
 {
     int n = 0;
-    chess::Color us     = board.sideToMove();
-    chess::Color them   = ~us;
+    chess::Color us   = board.sideToMove();
+    chess::Color them = ~us;
     bool mirror = (us == chess::Color::BLACK);
 
     for (int i = 0; i < 6; ++i) {

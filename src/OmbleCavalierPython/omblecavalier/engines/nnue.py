@@ -10,17 +10,22 @@ Feature encoding mirrors features.py: 768-bit, side-to-move perspective.
 Features are built directly from a bulletchess Board — no FEN round-trip.
 
 Inference backend priority:
-  1. onnxruntime + CoreML EP (Apple Silicon ~15× vs numpy)
-  2. onnxruntime + CPU EP       (~5× vs numpy)
-  3. Pure numpy                 (fallback, no extra deps)
+  1. onnxruntime + CUDAExecutionProvider   (NVIDIA GPU, Linux/Windows)
+  2. onnxruntime + CoreML EP              (Apple Silicon ~15× vs numpy)
+  3. onnxruntime + CPU EP                 (~5× vs numpy)
+  4. Pure numpy with sparse gather        (fallback, no extra deps)
 
-No incremental accumulator: full forward pass per eval call. This is
-acceptable for Python; the C++ engine handles the incremental updates.
+Sparse gather: builds a list of ~25 active feature indices instead of a
+dense (768,) vector, then sums the corresponding rows of w1_T.  Replaces
+a 512×768 dense matmul (~393 k ops) with ~25 row additions (~13 k ops).
+
+No incremental accumulator: full forward pass per eval call.
 """
 import logging
 import os
 import struct
 import sys
+from typing import Union
 
 import numpy as np
 from bulletchess import BLACK, PIECE_TYPES, SQUARES, WHITE
@@ -35,11 +40,10 @@ _SQ_TO_INT = {sq: i for i, sq in enumerate(SQUARES)}
 _MIRROR = [(7 - sq // 8) * 8 + sq % 8 for sq in range(64)]
 
 
-def _search_nnue() -> tuple[str | None, str | None]:
+def _search_nnue() -> tuple[Union[str, None], Union[str, None]]:
     """Return (nnue_path, onnx_path) for the first matching pair found."""
     here = os.path.dirname(os.path.abspath(__file__))
     roots = []
-    # PyInstaller onefile: weights are bundled at the _MEIPASS root
     if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
         roots.append(sys._MEIPASS)
     roots += [
@@ -57,13 +61,15 @@ def _search_nnue() -> tuple[str | None, str | None]:
 
 
 class _OrtNet:
-    """onnxruntime inference session with CoreML → CPU EP fallback."""
+    """onnxruntime inference session: CUDA → CoreML → CPU EP fallback."""
 
     def __init__(self, onnx_path: str) -> None:
         import onnxruntime as ort
 
         providers: list[str] = []
         available = ort.get_available_providers()
+        if "CUDAExecutionProvider" in available:
+            providers.append("CUDAExecutionProvider")
         if "CoreMLExecutionProvider" in available:
             providers.append("CoreMLExecutionProvider")
         providers.append("CPUExecutionProvider")
@@ -72,16 +78,21 @@ class _OrtNet:
         active = self._session.get_providers()[0]
         logging.info(f"ONNX loaded ({active}): {onnx_path}")
 
-    def forward(self, feat: np.ndarray, n_pieces: int) -> int:
-        x = feat.reshape(1, -1)
-        logit = float(self._session.run(None, {"features": x})[0][0, 0])
+    def forward(self, indices: list[int], n_pieces: int) -> int:
+        feat = np.zeros(768, dtype=np.float32)
+        feat[indices] = 1.0
+        logit = float(self._session.run(None, {"features": feat.reshape(1, -1)})[0][0, 0])
         wp = 1.0 / (1.0 + np.exp(-logit))
         wp = max(1e-7, min(1.0 - 1e-7, wp))
         return int(400.0 * np.log(wp / (1.0 - wp)))
 
 
 class _Net:
-    """Pure-numpy forward pass for the 768 → 512 (SCReLU) → N_BUCKETS NNUE network."""
+    """Pure-numpy forward pass with sparse gather for the L1 layer.
+
+    Instead of the 512×768 dense matmul, we sum only the ~25 active rows of
+    the transposed weight matrix w1_T[768, 512].  This is ~30× fewer ops.
+    """
 
     def __init__(self, path: str) -> None:
         with open(path, "rb") as f:
@@ -94,9 +105,11 @@ class _Net:
             n0 = struct.unpack("<I", f.read(4))[0]
             n1 = struct.unpack("<I", f.read(4))[0]
 
-            self._w1 = (
-                np.frombuffer(f.read(n1 * n0 * 4), dtype="<f4").reshape(n1, n0).copy()
-            )
+            # Load w1 [n1, n0], immediately transpose to [n0, n1] for row-sparse access.
+            # C-contiguous layout ensures each feature row is a contiguous n1-float block.
+            raw_w1 = np.frombuffer(f.read(n1 * n0 * 4), dtype="<f4").reshape(n1, n0)
+            self._w1_T = np.ascontiguousarray(raw_w1.T)  # shape [768, 512]
+
             self._b1 = np.frombuffer(f.read(n1 * 4), dtype="<f4").copy()
             self._w_out = (
                 np.frombuffer(f.read(self._n_buckets * n1 * 4), dtype="<f4")
@@ -109,8 +122,9 @@ class _Net:
         c = np.clip(x, 0.0, 1.0)
         return c * c
 
-    def forward(self, feat: np.ndarray, n_pieces: int) -> int:
-        x1 = self._screlu(self._w1 @ feat + self._b1)
+    def forward(self, indices: list[int], n_pieces: int) -> int:
+        # Sparse gather: sum active feature rows + bias, then SCReLU
+        x1 = self._screlu(self._w1_T[indices].sum(axis=0) + self._b1)
 
         bucket = min(self._n_buckets - 1, (32 - n_pieces) * self._n_buckets // 32)
         logit = float(self._w_out[bucket] @ x1 + self._b_out[bucket])
@@ -120,28 +134,28 @@ class _Net:
         return int(400.0 * np.log(wp / (1.0 - wp)))
 
 
-def _board_to_features(board) -> tuple[np.ndarray, int]:
-    """Build a (768,) float32 feature vector and piece count from a bulletchess Board."""
-    feat   = np.zeros(768, dtype=np.float32)
-    us     = board.turn
-    them   = BLACK if us == WHITE else WHITE
-    mirror = us == BLACK
+def _board_to_feature_indices(board) -> tuple[list[int], int]:
+    """Return (active_feature_indices, piece_count) for the current position."""
+    indices = []
+    us      = board.turn
+    them    = BLACK if us == WHITE else WHITE
+    mirror  = us == BLACK
     n_pieces = 0
     for i, pt in enumerate(PIECE_TYPES):
         for sq in board[us, pt]:
             s = _SQ_TO_INT[sq]
-            feat[i * 64 + (_MIRROR[s] if mirror else s)] = 1.0
+            indices.append(i * 64 + (_MIRROR[s] if mirror else s))
             n_pieces += 1
         for sq in board[them, pt]:
             s = _SQ_TO_INT[sq]
-            feat[384 + i * 64 + (_MIRROR[s] if mirror else s)] = 1.0
+            indices.append(384 + i * 64 + (_MIRROR[s] if mirror else s))
             n_pieces += 1
-    return feat, n_pieces
+    return indices, n_pieces
 
 
 # ── Module-level singleton loaded once at import time ─────────────────────────
 
-_net: _OrtNet | _Net | None = None
+_net: Union[_OrtNet, _Net, None] = None
 _nnue_path, _onnx_path = _search_nnue()
 
 if _onnx_path:
@@ -153,7 +167,7 @@ if _onnx_path:
 if _net is None and _nnue_path:
     try:
         _net = _Net(_nnue_path)
-        logging.info(f"NNUE (numpy) loaded: {_nnue_path}")
+        logging.info(f"NNUE (numpy sparse) loaded: {_nnue_path}")
     except Exception as exc:
         logging.warning(f"NNUE load failed ({_nnue_path}): {exc}")
 
@@ -165,12 +179,12 @@ def is_loaded() -> bool:
     return _net is not None
 
 
-def eval_cp(board) -> int | None:
+def eval_cp(board) -> Union[int, None]:
     """
     Return centipawn score from side-to-move's perspective, or None if no
     .nnue file is loaded (caller should fall back to HCE).
     """
     if _net is None:
         return None
-    feat, n_pieces = _board_to_features(board)
-    return _net.forward(feat, n_pieces)
+    indices, n_pieces = _board_to_feature_indices(board)
+    return _net.forward(indices, n_pieces)
