@@ -9,6 +9,19 @@ Two UCI-compatible chess engines — one in C++, one in Python — built to run 
 
 ---
 
+## Lichess Rating History
+
+| Date | Engine | Format | Rating | Games |
+|------|--------|--------|--------|-------|
+| 2026-05-28 | OmbleCavalier (Python) | Bullet | 1860 | 628 |
+| 2026-05-28 | OmbleCavalier (Python) | Blitz | 1883 | 728 |
+| 2026-05-28 | OmbleCavalier (Python) | Rapid | 1764 | 19 |
+| 2026-05-28 | OmbleCavalierPP (C++) | Bullet | 2079 | 7,772 |
+| 2026-05-28 | OmbleCavalierPP (C++) | Blitz | 2070 | 8,065 |
+| 2026-05-28 | OmbleCavalierPP (C++) | Rapid | 1858 | 979 |
+
+---
+
 ## ♞ OmbleCavalier++ (C++)
 
 <img src="https://i.imgur.com/0FmFSkX.jpg" width="400"/>
@@ -191,13 +204,17 @@ uv run python lichess-bot.py -c config_python.yml
 
 Ranked by estimated Elo gain per implementation effort. _Both engines_ unless noted.
 
-### Tier 1 — Quick wins (~1–2h each, high return)
+### Tier 1 — Highest priority (biggest Elo gains)
 
+- [ ] **SEE (Static Exchange Evaluation)** — Simulate full capture sequences to determine if a trade is winning or losing. Replaces MVV-LVA in ordering, prunes bad captures in QS, enables SEE-based pruning in main search. Est. +50–100 Elo. _Both engines._
+- [ ] **Fix two-sided mobility** — Currently only the side-to-move's legal move count contributes to eval; this creates a bias that cancels incorrectly across plies. Eval both sides and difference them (or use attack maps). Bug fix + est. +20–40 Elo. _Both engines._
+- [ ] **LMR log table** — Current LMR uses only two reduction levels (1 or 2). Replace with a standard log-based table: `R = 0.75 + log(depth) * log(moveIndex) / 2`. Meaningful improvement past depth 8. Est. +20 Elo. _Both engines._
+- [ ] **Late Move Pruning (LMP)** — At low depths (≤ 3) with no capture/check, drop moves after N quiet moves entirely rather than just reducing. Cheap to implement alongside LMR. Est. +15 Elo. _Both engines._
+- [ ] **Delta Pruning in Quiescence** — Skip captures where `stand_pat + captured_value + margin <= alpha`. Avoids searching captures that cannot raise alpha. Est. +10 Elo. _Both engines._
+- [ ] **Countermove Heuristic** — Store the quiet move causing a beta cutoff indexed by `[prev_from][prev_to]`; score it just below killers in ordering. ~10 lines. Est. +15 Elo. _Both engines._
+- [ ] **Principal Variation Search (PVS)** — After the first move, search subsequent moves with a null window `(-alpha-1, -alpha)` and re-search full window only on fail-high. Pairs naturally with LMR. Est. +20 Elo. _Both engines._
 - [x] **Late Move Reduction (LMR)** — Quiet, non-killer, non-check moves after index 2 get depth-1 or depth-2 reduction with re-search on fail-high. _Both engines._
-- [ ] **Futility Pruning** — At depth 1, if `static_eval + 200 <= alpha`, skip the move entirely. ~5 lines, est. +25 Elo. _Both engines._
-- [ ] **Principal Variation Search (PVS)** — After the first move, search with null window `(-alpha-1, -alpha)` and re-search full window only on fail-high. Pairs naturally with LMR. Est. +25 Elo. _Both engines._
-- [ ] **Delta Pruning in Quiescence** — Skip captures where `stand_pat + piece_value + margin <= alpha`. Prunes useless captures cheaply. Est. +10 Elo. _Both engines._
-- [ ] **Endgame King PST** — Add a second king table where the king centralizes; swap based on remaining material. Est. +20 Elo. _Both engines._
+- [x] **Futility Pruning** — At depth 1, if `static_eval + 300 <= alpha`, skip quiet non-killer moves. _Both engines._
 
 ### Tier 2 — Evaluation improvements (~1–3h each)
 
@@ -205,21 +222,20 @@ Ranked by estimated Elo gain per implementation effort. _Both engines_ unless no
 - [x] **Passed pawn rank scaling** — Bonuses now scale with advancement rank: `MG [0,5,10,20,35,55,80,0]`, `EG [0,15,25,50,80,125,175,0]`. _Both engines._
 - [x] **Gate king safety on game phase** — King safety penalties scale by `phase/24`; fade to zero in endgames where the king EG PST takes over. _Both engines._
 - [x] **Endgame King PST** — Dedicated EG king table rewards centralization; blended via tapered eval. _Both engines._
-- [ ] **Rook on open / semi-open file** — Rook with no friendly pawns on its file: +15 (open), +10 (semi-open). Est. +25 Elo. _Both engines._
+- [x] **Rook on open / semi-open file** — Rook with no friendly pawns on its file: +20 (open), +10 (semi-open). _Both engines._
 - [ ] **Rook on 7th rank** — +20 bonus per rook on rank 7 (rank 2 for Black). Est. +10 Elo. _Both engines._
-- [ ] **Two-sided mobility** — Currently only the side-to-move's legal move count is used. Differencing both sides gives a more accurate positional bonus. _Both engines._
+- [ ] **Knight / bishop outposts** — Bonus for minor pieces on outpost squares (advanced, protected by a pawn, cannot be chased by opponent pawns). Est. +15 Elo. _Both engines._
+- [ ] **Backward pawns** — Penalty for pawns that cannot advance and sit on a semi-open file (can't be defended by other pawns). Est. +10 Elo. _Both engines._
 
 ### Tier 2 — Search improvements
 
-- [ ] **SEE (Static Exchange Evaluation)** — Replace MVV-LVA with a full capture-sequence simulation to determine if a trade is winning or losing. Est. +20 Elo. _Both engines._
 - [ ] **Repetition detection** — Track Zobrist hashes in a stack through the search; detect 3-fold repetition explicitly. `bulletchess DRAW` may miss mid-search repetitions. _Python only._
-- [ ] **Countermove Heuristic** — Store the move causing a beta cutoff indexed by the previous move; give it a bonus in ordering just below killers. Est. +5 Elo. _Both engines._
 
 ### Tier 3 — Larger effort
 
+- [ ] **Pawn hash table** — Cache pawn structure scores independently of the main TT; pawn structure is expensive to recompute at every node. _Both engines._
 - [ ] **Syzygy Tablebase direct integration** — Engine-side probe for ≤7-piece positions for instant WDL+DTZ. Online EGTB already configured in lichess-bot. Est. +50–100 Elo in endgames. _Both engines._
 - [ ] **Native null move** — Current FEN-string flip works but allocates a new Board on every null move attempt. Investigate bulletchess internals or a workaround. _Python only._
-- [ ] **Pawn hash table** — Cache pawn structure scores independently of the main TT. _Both engines._
 - [ ] **Multi-PV output** — Report multiple best lines for analysis mode. _Both engines._
 - [ ] **Built-in benchmarking** — Port the C++ `bench` command to Python. _Python only._
 
