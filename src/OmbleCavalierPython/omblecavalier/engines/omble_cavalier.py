@@ -537,7 +537,7 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, 
                 return beta
 
     original_alpha = alpha
-    best_score = float("-inf")
+    best_score = -(MATE_SCORE + 1)
     move_idx = 0
 
     # Futility pruning: at depth 1, skip quiet moves that can't raise alpha
@@ -610,7 +610,7 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, 
 
 def find_best_move(board, depth, start_time, time_limit, legal_moves, alpha, beta, rep_counts=None):
     best_move = None
-    best_score = float("-inf")
+    best_score = -(MATE_SCORE + 1)
     timed_out = False
 
     for move in order_moves(board, legal_moves, 0):
@@ -628,12 +628,11 @@ def find_best_move(board, depth, start_time, time_limit, legal_moves, alpha, bet
         if score > best_score:
             best_score = score
             best_move = move
+            print(f"info score cp {score} pv {move.uci()}")
         if score > alpha:
             alpha = score
         if alpha >= beta:
             break
-
-        print(f"info score cp {score} pv {move.uci()}")
 
     return best_move, best_score, timed_out
 
