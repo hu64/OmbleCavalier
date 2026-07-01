@@ -39,8 +39,14 @@ void resetSearchState()
 
 int quiesce(Board &board, int alpha, int beta, int plyFromRoot)
 {
+    if (board.isHalfMoveDraw() || board.isInsufficientMaterial())
+        return 0;
+
     chess::Movelist legalMoves;
     movegen::legalmoves(legalMoves, board);
+
+    if (legalMoves.empty())
+        return board.inCheck() ? -MATE_SCORE + plyFromRoot : 0;
 
     int stand_pat = evaluateBoard(board, plyFromRoot, legalMoves);
 
@@ -82,22 +88,24 @@ int negamax(Board &board, int depth, int alpha, int beta, int plyFromRoot, bool 
     if (board.isHalfMoveDraw())
         return 0;
 
+    Move hashMove = Move::NULL_MOVE;
+    auto ttVal = ttLookup(board, depth, alpha, beta, plyFromRoot, hashMove);
+    if (ttVal.has_value())
+        return ttVal.value();
+
+    // Drop into quiescence at the horizon before generating a full movelist here;
+    // quiesce() handles its own draw/mate/stalemate detection.
+    if (depth <= 0)
+        return quiesce(board, alpha, beta, plyFromRoot);
+
     chess::Movelist legalMoves;
     movegen::legalmoves(legalMoves, board);
 
     if (legalMoves.empty())
         return board.inCheck() ? -MATE_SCORE + plyFromRoot : 0;
 
-    Move hashMove = Move::NULL_MOVE;
-    auto ttVal = ttLookup(board, depth, alpha, beta, plyFromRoot, hashMove);
-    if (ttVal.has_value())
-        return ttVal.value();
-
     bool inCheck = board.inCheck();
     int extension = inCheck ? 1 : 0;
-
-    if (depth <= 0)
-        return quiesce(board, alpha, beta, plyFromRoot + 1);
 
     // Null move pruning
     if (depth >= 3 && !inCheck)
@@ -295,7 +303,8 @@ Move findBestMoveIterative(Board &board, int maxDepth, double totalTimeRemaining
         std::cout << "info string Searching at depth " << depth << "\n";
         bool timedOut = false;
 
-        int window = 50;
+        // Full window at depth 1 (no reliable prevScore yet); aspiration thereafter.
+        int window = depth <= 1 ? MATE_SCORE : 50;
         int alpha = std::max(-MATE_SCORE, prevScore - window);
         int beta  = std::min(MATE_SCORE,  prevScore + window);
         SearchResult result;

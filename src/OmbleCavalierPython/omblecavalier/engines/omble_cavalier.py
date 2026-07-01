@@ -523,12 +523,12 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, 
     # Null move pruning (copy + attribute mutation avoids slow FEN roundtrip)
     if depth >= 3 and not in_check:
         non_pawn_material = (
-            len(board[board.turn, PIECE_TYPES[1]]) * 320
-            + len(board[board.turn, PIECE_TYPES[2]]) * 330
-            + len(board[board.turn, PIECE_TYPES[3]]) * 500
-            + len(board[board.turn, PIECE_TYPES[4]]) * 900
+            len(board[board.turn, PIECE_TYPES[1]]) * MG_VALUES[1]
+            + len(board[board.turn, PIECE_TYPES[2]]) * MG_VALUES[2]
+            + len(board[board.turn, PIECE_TYPES[3]]) * MG_VALUES[3]
+            + len(board[board.turn, PIECE_TYPES[4]]) * MG_VALUES[4]
         )
-        if non_pawn_material >= 1000:
+        if non_pawn_material >= 2 * MG_VALUES[3]:
             null_board = board.copy()
             null_board.turn = BLACK if board.turn == WHITE else WHITE
             null_board.en_passant_square = None
@@ -608,6 +608,15 @@ def negamax(board, depth, alpha, beta, start_time, time_limit, ply_from_root=0, 
                 del rep_counts[current_key]
 
 
+def _uci_score(score: int) -> str:
+    """Format a score as a UCI info field: 'mate N' near mate, otherwise 'cp X'."""
+    if score > MATE_SCORE - MAX_PLY:
+        return f"mate {(MATE_SCORE - score + 1) // 2}"
+    if score < -MATE_SCORE + MAX_PLY:
+        return f"mate {-((MATE_SCORE + score + 1) // 2)}"
+    return f"cp {score}"
+
+
 def find_best_move(board, depth, start_time, time_limit, legal_moves, alpha, beta, rep_counts=None):
     best_move = None
     best_score = -(MATE_SCORE + 1)
@@ -628,7 +637,7 @@ def find_best_move(board, depth, start_time, time_limit, legal_moves, alpha, bet
         if score > best_score:
             best_score = score
             best_move = move
-            print(f"info score cp {score} pv {move.uci()}")
+            print(f"info score {_uci_score(score)} pv {move.uci()}")
         if score > alpha:
             alpha = score
         if alpha >= beta:
