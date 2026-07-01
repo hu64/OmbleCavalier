@@ -124,6 +124,9 @@ def watch_control_stream(control_queue: CONTROL_QUEUE_TYPE, li: lichess.Lichess)
                         control_queue.put_nowait(event)
                     else:
                         control_queue.put_nowait({"type": "ping"})
+        except lichess.RateLimitedError as e:
+            logger.warning(f"Control stream rate limited, waiting {e.timeout.total_seconds():.0f}s before reconnecting.")
+            time.sleep(e.timeout.total_seconds())
         except Exception:
             logger.warning(f"Control stream error, reconnecting:\n{traceback.format_exc()}")
             time.sleep(1)
